@@ -235,9 +235,9 @@ step "启动服务"
 
 if confirm "y" "现在启动 RemoteCC 服务?"; then
   pkill -f "node.*index.js" 2>/dev/null || true; sleep 1
-  (cd "$SCRIPT_DIR/server" && \
-    RC_USER="$RC_USER" RC_PASS="$RC_PASS" PORT="$PORT" \
-    ${IS_SANDBOX_FLAG}CLAUDE_BIN="$CLAUDE_BIN" \
+  (cd "$SCRIPT_DIR/server"
+    export RC_USER="$RC_USER" RC_PASS="$RC_PASS" PORT="$PORT" CLAUDE_BIN="$CLAUDE_BIN"
+    [[ -n "$IS_SANDBOX_FLAG" ]] && export IS_SANDBOX=1
     node index.js > /tmp/rcc.log 2>&1) &
   SVC_PID=$!
   sleep 2
