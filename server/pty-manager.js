@@ -81,6 +81,7 @@ function wsClient(ws) {
   return {
     type: 'ws',
     id: uuidv4(),
+    cols: 80, rows: 24,   // 该客户端上报的终端尺寸
     send(data)    { try { if (ws.readyState === 1) ws.send(data); } catch (_) {} },
     sendJSON(obj) { try { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); } catch (_) {} },
     close()       { try { ws.close(); } catch (_) {} },
@@ -92,8 +93,9 @@ function unixClient(socket) {
   return {
     type: 'unix',
     id: uuidv4(),
+    cols: 80, rows: 24,   // 该客户端上报的终端尺寸（通过 OOB RESIZE 帧更新）
     send(data)    { try { if (!socket.destroyed) socket.write(data); } catch (_) {} },
-    sendJSON(_)   {},   // Unix clients only get raw PTY data
+    sendJSON(_)   {},
     close()       { try { socket.destroy(); } catch (_) {} },
     _socket: socket,
   };
@@ -179,8 +181,13 @@ function startSocketServer(sessionId) {
               const parts = frame.slice(7).split(':');
               const cols = parseInt(parts[0], 10);
               const rows = parseInt(parts[1], 10);
-              if (cols > 0 && rows > 0 && session.ptyProcess) {
-                try { session.ptyProcess.resize(cols, rows); } catch (_) {}
+              if (cols > 0 && rows > 0) {
+                // 更新该 unix client 记录的尺寸
+                client.cols = cols;
+                client.rows = rows;
+                if (session.ptyProcess) {
+                  try { session.ptyProcess.resize(cols, rows); } catch (_) {}
+                }
               }
             }
             processed = true;
@@ -190,6 +197,8 @@ function startSocketServer(sessionId) {
           }
         } else {
           if (inBuf && session.ptyProcess) {
+            // 输入时 resize 到该 unix client 的尺寸
+            try { session.ptyProcess.resize(client.cols || 80, client.rows || 24); } catch (_) {}
             session.ptyProcess.write(Buffer.from(inBuf, 'binary').toString());
             session.lastActiveAt = Date.now();
           }
@@ -375,12 +384,19 @@ function attachSession(ws, wsId, sessionId) {
 // ── Message handler ───────────────────────────────────────────────────────────
 
 function handleMessage(ws, wsId, raw) {
+  // 输入时自动将 PTY resize 到该 client 的尺寸（谁在输入就按谁的窗口渲染）
+  function resizeToClient(client, sess) {
+    if (!sess || !sess.ptyProcess || !client) return;
+    try { sess.ptyProcess.resize(client.cols || 80, client.rows || 24); } catch (_) {}
+  }
+
   let msg;
   try { msg = JSON.parse(raw); } catch (_) {
     // Raw string → PTY input
     const entry = wsToSession.get(wsId);
     const session = entry && sessions.get(entry.sessionId);
     if (session && session.ptyProcess) {
+      resizeToClient(entry?.client, session);
       session.ptyProcess.write(raw);
       session.lastActiveAt = Date.now();
     }
@@ -402,6 +418,7 @@ function handleMessage(ws, wsId, raw) {
       break;
 
     case 'resize':
+      if (entry) { entry.client.cols = msg.cols || 80; entry.client.rows = msg.rows || 24; }
       if (session && session.ptyProcess)
         session.ptyProcess.resize(msg.cols || 80, msg.rows || 24);
       break;
@@ -440,6 +457,7 @@ function handleMessage(ws, wsId, raw) {
 
     case 'input':
       if (session && session.ptyProcess && msg.data) {
+        resizeToClient(entry?.client, session);
         session.ptyProcess.write(msg.data);
         session.lastActiveAt = Date.now();
       }
