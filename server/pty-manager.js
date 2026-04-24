@@ -24,7 +24,7 @@ function findClaudeBin() {
     return 'claude.cmd'; // fallback，依赖 PATH
   }
   // Unix: nvm 默认路径
-  return '/root/.nvm/versions/node/v24.13.0/bin/claude';
+  return '/root/.nvm/versions/node/v24.14.0/bin/claude';
 }
 
 const CLAUDE_BIN = findClaudeBin();

@@ -31,19 +31,20 @@ ok()   { echo -e "  ${GREEN}✓ $1${R}"; }
 warn() { echo -e "  ${YELLOW}⚠ $1${R}"; }
 err()  { echo -e "  ${RED}✗ $1${R}"; exit 1; }
 info() { echo -e "  ${GRAY}$1${R}"; }
-ask()  { echo -en "  ${CYAN}$1${R}"; }
+ask()  { echo -en "  ${CYAN}$1${R}" > /dev/tty; }
 
 confirm() {
   local default="${1:-y}"
   local prompt="(Y/n)"; [[ "$default" == "n" ]] && prompt="(y/N)"
-  ask "$2 $prompt: "; read -r ans; ans="${ans:-$default}"
+  ask "$2 $prompt: "; read -r ans < /dev/tty; ans="${ans:-$default}"
   [[ "$ans" =~ ^[Yy] ]]
 }
 
 input() {
-  local def="${1:-}" msg="$2"
+  local def="${1:-}" msg="$2" val
   [[ -n "$def" ]] && ask "$msg [${def}]: " || ask "$msg: "
-  read -r val; echo "${val:-$def}"
+  read -r val < /dev/tty
+  echo "${val:-$def}"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -65,6 +66,13 @@ ok "Node.js $NODE_VER"
 # npm
 command -v npm &>/dev/null || err "未找到 npm"
 ok "npm $(npm --version)"
+
+# g++（node-pty-prebuilt-multiarch 使用预编译二进制，通常不需要 g++）
+if command -v g++ &>/dev/null; then
+  ok "g++ $(g++ --version | head -1 | grep -oP '\d+\.\d+\.\d+' | head -1)"
+else
+  info "未检测到 g++（使用预编译 node-pty，无需编译）"
+fi
 
 # ── Step 2: 自动检测 Claude Code ─────────────────────────────────────────────
 step "检测 Claude Code"
@@ -113,19 +121,20 @@ fi
 # ── Step 4: 服务配置 ──────────────────────────────────────────────────────────
 step "配置服务参数"
 
-echo -e "  ${GRAY}配置 Web 界面的登录账号和监听端口。"
-echo -e "  安装完成后通过浏览器访问 http://<IP>:<端口> 并用此账号登录。${R}\n"
+echo -e "  ${GRAY}配置 Web 界面的登录账号和监听端口，安装完成后用此账号登录浏览器界面。${R}\n"
 
-echo -e "  ${GRAY}管理员用户名：登录 Web 界面使用，直接回车使用默认值 [admin]${R}"
-RC_USER=$(input "admin" "管理员用户名")
+RC_USER=$(input "admin" "管理员用户名（Web 登录用）")
 
-echo -e "\n  ${GRAY}管理员密码：登录 Web 界面使用，不能为空${R}"
-echo -n "  密码（输入不显示）: "; read -rs RC_PASS; echo ""
-[[ -z "$RC_PASS" ]] && err "密码不能为空"
-[[ "$RC_PASS" == "changeme" ]] && warn "建议使用更安全的密码"
+while true; do
+  echo -n "  管理员密码（Web 登录用，输入不显示）: " > /dev/tty; read -rs RC_PASS < /dev/tty; echo "" > /dev/tty
+  [[ -z "$RC_PASS" ]] && { echo -e "  ${RED}✗ 密码不能为空${R}"; continue; }
+  echo -n "  再次输入密码确认: " > /dev/tty; read -rs RC_PASS2 < /dev/tty; echo "" > /dev/tty
+  [[ "$RC_PASS" != "$RC_PASS2" ]] && { echo -e "  ${RED}✗ 两次密码不一致，请重新输入${R}"; continue; }
+  [[ "$RC_PASS" == "changeme" ]] && warn "建议使用更安全的密码"
+  break
+done
 
-echo -e "\n  ${GRAY}监听端口：Web 界面和 WebSocket 的服务端口，直接回车使用默认值 [8310]${R}"
-PORT=$(input "8310" "监听端口")
+PORT=$(input "8310" "监听端口（浏览器访问 http://<IP>:<端口>）")
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "端口号无效: $PORT"
 
 echo ""
@@ -155,8 +164,41 @@ ok ".env 已生成（权限 600）"
 # ── Step 6: 安装依赖 ──────────────────────────────────────────────────────────
 step "安装依赖"
 
-echo -e "  ${GRAY}安装服务端（含 node-pty 原生编译）...${R}"
+echo -e "  ${GRAY}安装服务端依赖（含 node-pty 原生编译）...${R}"
+
+# node-gyp 编译原生模块时使用 ~/.cache/node-gyp/<ver>/include/node/common.gypi，
+# 该缓存由 node-gyp 从 node 安装目录复制而来。
+# 策略：
+#   1. 清除旧缓存（避免缓存里残留的 gnu++20 干扰）
+#   2. patch node 安装目录的 common.gypi（gcc<10 不支持 gnu++20，需改为 gnu++2a）
+#   3. npm install（node-gyp 重建缓存时会复制 patch 后的版本，从而正常编译）
+#   4. 还原 node 安装目录的 common.gypi
+NODE_VER_FULL=$(node -e "process.stdout.write(process.version.slice(1))")
+NODE_GYP_CACHE="$HOME/.cache/node-gyp/${NODE_VER_FULL}"
+if [[ -d "$NODE_GYP_CACHE" ]]; then
+  info "清除 node-gyp 旧缓存 $NODE_GYP_CACHE ..."
+  rm -rf "$NODE_GYP_CACHE"
+fi
+
+COMMON_GYPI="$(node -e "process.stdout.write(require('path').join(process.execPath,'../../include/node/common.gypi'))")"
+PATCHED=false
+GPP_MAJOR=$(g++ -dumpversion 2>/dev/null | cut -d. -f1)
+if [[ -n "$GPP_MAJOR" && "$GPP_MAJOR" -lt 10 ]]; then
+  if [[ -f "$COMMON_GYPI" ]] && grep -q "gnu++20" "$COMMON_GYPI" 2>/dev/null; then
+    info "gcc $GPP_MAJOR 不支持 gnu++20，临时 patch node 安装目录 common.gypi ..."
+    cp "$COMMON_GYPI" "${COMMON_GYPI}.rcc_bak"
+    sed -i 's/gnu++20/gnu++2a/g' "$COMMON_GYPI"
+    PATCHED=true
+  fi
+fi
+
 (cd "$SCRIPT_DIR/server" && npm install --loglevel=warn 2>&1 | tail -2)
+
+[[ "$PATCHED" == "true" ]] && mv "${COMMON_GYPI}.rcc_bak" "$COMMON_GYPI"
+
+if ! node -e "require('$SCRIPT_DIR/server/node_modules/node-pty')" 2>/dev/null; then
+  err "node-pty 编译失败。请确认 g++ 已安装：\n  CentOS: yum install gcc-c++\n  Ubuntu: apt install g++ build-essential"
+fi
 ok "服务端依赖完成"
 
 echo -e "  ${GRAY}安装前端依赖...${R}"
