@@ -76,7 +76,7 @@ bash install.sh
 安装完成后：
 
 ```bash
-rcc start          # 启动服务
+remotecc start          # 启动服务
 ```
 
 浏览器打开 `http://<IP>:8310`，或直接用终端：
@@ -90,10 +90,10 @@ rcc-tui            # 本地交互式界面（推荐）
 ## 常用命令
 
 ```bash
-rcc start          # 启动服务（守护进程，崩溃自动重启）
-rcc stop           # 停止服务
-rcc status         # 查看服务状态
-rcc ls             # 查看所有会话
+remotecc start          # 启动服务（守护进程，崩溃自动重启）
+remotecc stop           # 停止服务
+remotecc status         # 查看服务状态
+remotecc ls             # 查看所有会话
 rcc-tui            # 交互式 TUI（无需登录，本地直连）
 ```
 

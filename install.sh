@@ -215,7 +215,7 @@ ok "前端已构建 → client/dist/"
 step "安装命令行工具"
 
 BIN_DIR="/usr/local/bin"
-for tool in rcc rcc-tui rcc-server; do
+for tool in remotecc rcc-tui rcc-server; do
   src="$SCRIPT_DIR/$tool"
   [[ -f "$src" ]] || continue
   chmod +x "$src"
@@ -262,10 +262,10 @@ echo ""
 echo -e "  ${B}账号${R}  ${RC_USER} / ${D}(已配置)${R}"
 echo ""
 echo -e "  ${B}常用命令${R}"
-echo -e "    ${CYAN}rcc start${R}    启动服务"
-echo -e "    ${CYAN}rcc stop${R}     停止服务"
-echo -e "    ${CYAN}rcc status${R}   服务状态"
-echo -e "    ${CYAN}rcc ls${R}       查看会话"
+echo -e "    ${CYAN}remotecc start${R}    启动服务"
+echo -e "    ${CYAN}remotecc stop${R}     停止服务"
+echo -e "    ${CYAN}remotecc status${R}   服务状态"
+echo -e "    ${CYAN}remotecc ls${R}       查看会话"
 echo -e "    ${CYAN}rcc-tui${R}      交互式 TUI"
 echo ""
 echo -e "  ${D}${HR}${R}\n"

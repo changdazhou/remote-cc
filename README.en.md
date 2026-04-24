@@ -76,7 +76,7 @@ The install script is fully interactive and auto-detects your environment.
 After installation:
 
 ```bash
-rcc start          # Start the service
+remotecc start          # Start the service
 ```
 
 Open `http://<server-ip>:8310` in a browser, or use the terminal directly:
@@ -90,10 +90,10 @@ rcc-tui            # Local interactive TUI (recommended)
 ## Commands
 
 ```bash
-rcc start          # Start service (daemon, auto-restart on crash)
-rcc stop           # Stop service
-rcc status         # Show service status
-rcc ls             # List all sessions
+remotecc start          # Start service (daemon, auto-restart on crash)
+remotecc stop           # Stop service
+remotecc status         # Show service status
+remotecc ls             # List all sessions
 rcc-tui            # Interactive TUI (no login, local direct connect)
 ```
 

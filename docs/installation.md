@@ -66,12 +66,12 @@ ln -sf $(pwd)/rcc-server /usr/local/bin/rcc-server
 #### 5. 启动服务
 
 ```bash
-rcc start        # 守护进程启动
-rcc status       # 查看状态
-rcc stop         # 停止
+remotecc start        # 守护进程启动
+remotecc status       # 查看状态
+remotecc stop         # 停止
 
 # 启用沙箱模式
-IS_SANDBOX=1 RC_USER=admin RC_PASS=yourpassword PORT=8310 rcc start
+IS_SANDBOX=1 RC_USER=admin RC_PASS=yourpassword PORT=8310 remotecc start
 ```
 
 ---
@@ -127,7 +127,7 @@ server {
 git pull origin main
 cd server && npm install
 cd ../client && npm install && npm run build
-rcc restart
+remotecc restart
 ```
 
 ### 数据目录
@@ -205,12 +205,12 @@ ln -sf $(pwd)/rcc-server /usr/local/bin/rcc-server
 #### 5. Start Service
 
 ```bash
-rcc start        # Start as daemon
-rcc status       # Check status
-rcc stop         # Stop
+remotecc start        # Start as daemon
+remotecc status       # Check status
+remotecc stop         # Stop
 
 # With sandbox mode
-IS_SANDBOX=1 RC_USER=admin RC_PASS=yourpassword PORT=8310 rcc start
+IS_SANDBOX=1 RC_USER=admin RC_PASS=yourpassword PORT=8310 remotecc start
 ```
 
 ---
@@ -266,7 +266,7 @@ server {
 git pull origin main
 cd server && npm install
 cd ../client && npm install && npm run build
-rcc restart
+remotecc restart
 ```
 
 ### Data Directory

@@ -14,7 +14,7 @@ RemoteCC 的核心是**一个 PTY 进程，多个同步观察者**：
 Claude Code PTY（持续运行）
         ├──▶ 浏览器 WebSocket（手机/平板/PC）
         ├──▶ rcc-tui（本地交互式 TUI）
-        └──▶ rcc attach（本地终端直连）
+        └──▶ remotecc attach（本地终端直连）
 ```
 
 无论从哪端输入，所有端实时可见。PTY 独立于客户端运行——关闭浏览器或断开 SSH，Claude 在后台继续工作。
@@ -72,14 +72,14 @@ Claude Code PTY（持续运行）
 统一管理入口：
 
 ```bash
-rcc start         # 启动服务（守护进程）
-rcc stop          # 停止服务
-rcc restart       # 重启服务
-rcc status        # 查看服务状态
-rcc ls            # 列出所有会话
-rcc attach        # 接入唯一活跃会话
-rcc attach <name> # 按名称接入
-rcc log <name>    # tail -f 会话日志
+remotecc start         # 启动服务（守护进程）
+remotecc stop          # 停止服务
+remotecc restart       # 重启服务
+remotecc status        # 查看服务状态
+remotecc ls            # 列出所有会话
+remotecc attach        # 接入唯一活跃会话
+remotecc attach <name> # 按名称接入
+remotecc log <name>    # tail -f 会话日志
 ```
 
 **断开方式**：`Ctrl+]`（不终止 PTY）
@@ -140,7 +140,7 @@ RemoteCC's core is **one PTY process, multiple synchronized observers**:
 Claude Code PTY (always running)
         ├──▶ Browser WebSocket (phone/tablet/PC)
         ├──▶ rcc-tui (local interactive TUI)
-        └──▶ rcc attach (local terminal direct connect)
+        └──▶ remotecc attach (local terminal direct connect)
 ```
 
 Input from any client is visible to all others in real time. The PTY runs independently — closing the browser or dropping SSH does not interrupt Claude.
@@ -198,14 +198,14 @@ Open `http://<server>:8310` in a browser and log in.
 Unified management entry point:
 
 ```bash
-rcc start         # Start service (daemon)
-rcc stop          # Stop service
-rcc restart       # Restart service
-rcc status        # Show service status
-rcc ls            # List all sessions
-rcc attach        # Attach to the only active session
-rcc attach <name> # Attach by name
-rcc log <name>    # tail -f session log
+remotecc start         # Start service (daemon)
+remotecc stop          # Stop service
+remotecc restart       # Restart service
+remotecc status        # Show service status
+remotecc ls            # List all sessions
+remotecc attach        # Attach to the only active session
+remotecc attach <name> # Attach by name
+remotecc log <name>    # tail -f session log
 ```
 
 **Detach**: `Ctrl+]` (does not kill the PTY)
