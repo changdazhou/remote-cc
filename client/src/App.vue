@@ -263,21 +263,35 @@ function connectEntryWS(entry) {
 
   ws.onopen = () => {
     reconnDelay = 1000;
-    // Fit terminal now that WS is ready
-    const el = termRefs[entry.sid];
-    if (el) el.fit();
 
-    if (entry.attachSessionId) {
-      ws.send(JSON.stringify({ type: 'attach', sessionId: entry.attachSessionId }));
-    } else {
-      ws.send(JSON.stringify({
-        type: 'start',
-        workingDir: entry.workingDir,
-        resumeSessionId: entry.resumeSessionId || '',
-        name: entry.name,
-        cols: 80, rows: 24,
-      }));
-    }
+    // nextTick 确保 Terminal 组件已 mount 并完成初始 fit
+    nextTick(() => {
+      const el = termRefs[entry.sid];
+      if (el) el.fit();
+
+      const cols = el?.getCols?.() ?? 80;
+      const rows = el?.getRows?.() ?? 24;
+
+      if (entry.attachSessionId) {
+        ws.send(JSON.stringify({ type: 'attach', sessionId: entry.attachSessionId }));
+        // attach 后再发 resize，覆盖服务端 PTY 的旧尺寸
+        setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const el2 = termRefs[entry.sid];
+            if (el2) el2.fit();
+            ws.send(JSON.stringify({ type: 'resize', cols: el2?.getCols?.() ?? cols, rows: el2?.getRows?.() ?? rows }));
+          }
+        }, 300);
+      } else {
+        ws.send(JSON.stringify({
+          type: 'start',
+          workingDir: entry.workingDir,
+          resumeSessionId: entry.resumeSessionId || '',
+          name: entry.name,
+          cols, rows,
+        }));
+      }
+    });
   };
 
   ws.onmessage = (evt) => {
@@ -314,8 +328,9 @@ function connectEntryWS(entry) {
           const el = termRefs[entry.sid];
           if (el) {
             el.fit();
-            // 恢复历史会话后滚到底部（输入框位置）
             nextTick(() => el.scrollToBottom());
+            // 发送当前实际尺寸（replay 结束时 PTY 应该知道正确宽度）
+            ws.send(JSON.stringify({ type: 'resize', cols: el.getCols?.() ?? 80, rows: el.getRows?.() ?? 24 }));
           }
           return;
         }

@@ -155,7 +155,9 @@ function trackInput(data) {
   }
 }
 
-defineExpose({ write, fit, scrollToBottom, trackInput });
+function getCols() { return term?.cols ?? 80; }
+function getRows() { return term?.rows ?? 24; }
+defineExpose({ write, fit, scrollToBottom, trackInput, getCols, getRows });
 
 // ── 复制工具函数（兼容 HTTP 非安全上下文） ───────────────────────────────────
 function copyText(text) {
