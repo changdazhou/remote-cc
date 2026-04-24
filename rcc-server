@@ -1,0 +1,88 @@
+#!/bin/bash
+# rcc-server: 启动并守护 Remote Claude Code 服务
+# 用法: rcc-server [start|stop|restart|status|log]
+# 进程退出后自动重启
+
+RCC_DIR="/paddle/project/local_tools/remote_cc"
+SERVER_DIR="$RCC_DIR/server"
+PID_FILE="/tmp/rcc-server.pid"
+LOG_FILE="/tmp/rcc.log"
+PORT="${PORT:-8310}"
+RC_USER="${RC_USER:-admin}"
+RC_PASS="${RC_PASS:-changeme}"
+
+# 使用正确的 node
+NODE="/root/.nvm/versions/node/v24.13.0/bin/node"
+
+cmd="${1:-start}"
+
+is_running() {
+  [ -f "$PID_FILE" ] && kill -0 "$(cat $PID_FILE)" 2>/dev/null
+}
+
+do_start() {
+  if is_running; then
+    echo "rcc-server already running (pid $(cat $PID_FILE))"
+    return 0
+  fi
+
+  echo "Starting rcc-server on port $PORT..."
+
+  # Watchdog loop
+  (
+    while true; do
+      RC_USER="$RC_USER" RC_PASS="$RC_PASS" PORT="$PORT" \
+        "$NODE" "$SERVER_DIR/index.js" >> "$LOG_FILE" 2>&1
+      EXIT=$?
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] rcc-server exited (code $EXIT), restarting in 3s..." >> "$LOG_FILE"
+      sleep 3
+    done
+  ) &
+
+  WATCHDOG_PID=$!
+  echo $WATCHDOG_PID > "$PID_FILE"
+  echo "Started (watchdog pid $WATCHDOG_PID), log: $LOG_FILE"
+}
+
+do_stop() {
+  if ! is_running; then
+    echo "rcc-server not running"
+    rm -f "$PID_FILE"
+    return 0
+  fi
+  PID=$(cat "$PID_FILE")
+  echo "Stopping rcc-server (pid $PID)..."
+  # Kill the watchdog and all its children
+  pkill -P "$PID" 2>/dev/null
+  kill "$PID" 2>/dev/null
+  rm -f "$PID_FILE"
+  echo "Stopped."
+}
+
+do_status() {
+  if is_running; then
+    PID=$(cat "$PID_FILE")
+    echo "rcc-server running (watchdog pid $PID) on port $PORT"
+    echo "Log: $LOG_FILE"
+    # Show the actual node process
+    pgrep -a node 2>/dev/null | grep "index.js" | head -3
+  else
+    echo "rcc-server not running"
+  fi
+}
+
+do_log() {
+  tail -f "$LOG_FILE"
+}
+
+case "$cmd" in
+  start)   do_start   ;;
+  stop)    do_stop    ;;
+  restart) do_stop; sleep 1; do_start ;;
+  status)  do_status  ;;
+  log)     do_log     ;;
+  *)
+    echo "Usage: rcc-server [start|stop|restart|status|log]"
+    exit 1
+    ;;
+esac

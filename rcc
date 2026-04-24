@@ -1,0 +1,214 @@
+#!/usr/bin/env node
+/**
+ * rcc - RemoteCC 本地终端连接工具（跨平台）
+ *
+ * 用法:
+ *   rcc ls                        列出所有 session
+ *   rcc attach <sessionId|name>   连接到指定 session（双向同步）
+ *   rcc attach                    如果只有一个活跃 session，直接连接
+ *   rcc log <sessionId|name>      tail -f session 的 log 文件
+ *
+ * 平台支持：Linux / macOS（Unix socket）/ Windows（Named pipe）
+ */
+
+const net  = require('net');
+const fs   = require('fs');
+const path = require('path');
+const os   = require('os');
+const { spawn } = require('child_process');
+
+const IS_WIN     = process.platform === 'win32';
+const RCC_DIR    = path.join(os.homedir(), '.rcc');
+const META_FILE  = path.join(RCC_DIR, 'sessions.json');
+
+function loadMeta() {
+  try { return JSON.parse(fs.readFileSync(META_FILE, 'utf8')); }
+  catch (_) { return []; }
+}
+
+function findSession(idOrName) {
+  const metas = loadMeta();
+  return metas.find(s => s.sessionId === idOrName || s.name === idOrName
+    || s.sessionId.startsWith(idOrName));
+}
+
+function getSocketPath(meta) {
+  if (IS_WIN) return `\\\\.\\pipe\\rcc-${meta.sessionId}`;
+  return meta.socketPath || path.join(RCC_DIR, 'sockets', `${meta.sessionId}.sock`);
+}
+
+function socketExists(sockPath) {
+  if (IS_WIN) return true; // named pipe 无法用 existsSync 检查
+  return fs.existsSync(sockPath);
+}
+
+function listSessions() {
+  const metas = loadMeta();
+  if (metas.length === 0) { console.log('No sessions found.'); return; }
+
+  const now = Date.now();
+  console.log('\n  Sessions\n');
+  for (const s of metas) {
+    const status   = s.alive ? '\x1b[32m● live\x1b[0m' : '\x1b[90m○ dead\x1b[0m';
+    const elapsed  = formatAge(now - (s.lastActiveAt || s.createdAt));
+    const sockPath = getSocketPath(s);
+    const sockOk   = socketExists(sockPath);
+    const sockInfo = sockOk ? '\x1b[36m[socket ok]\x1b[0m' : '\x1b[90m[no socket]\x1b[0m';
+    console.log(`  ${status}  \x1b[1m${s.name}\x1b[0m`);
+    console.log(`       id:  ${s.sessionId}`);
+    console.log(`      cwd:  ${s.workingDir}`);
+    console.log(`     last:  ${elapsed} ago  ${sockInfo}`);
+    console.log(`      log:  ${s.logPath || '-'}`);
+    console.log();
+  }
+  console.log(`  Attach:  rcc attach <name|id>`);
+  console.log(`  Log:     rcc log <name|id>\n`);
+}
+
+function formatAge(ms) {
+  if (ms < 60000)   return Math.floor(ms / 1000) + 's';
+  if (ms < 3600000) return Math.floor(ms / 60000) + 'm';
+  if (ms < 86400000) return Math.floor(ms / 3600000) + 'h';
+  return Math.floor(ms / 86400000) + 'd';
+}
+
+function attachCmd(idOrName) {
+  let session;
+
+  if (!idOrName) {
+    const metas = loadMeta();
+    const alive  = metas.filter(s => s.alive);
+    if (alive.length === 1) {
+      session = alive[0];
+    } else if (alive.length === 0) {
+      console.error('No alive sessions. Start one in the browser first.');
+      process.exit(1);
+    } else {
+      console.error('Multiple alive sessions. Specify name or id:\n');
+      for (const s of alive) console.error(`  rcc attach ${s.name}  (${s.sessionId.slice(0, 8)})`);
+      process.exit(1);
+    }
+  } else {
+    session = findSession(idOrName);
+    if (!session) { console.error(`Session not found: ${idOrName}`); process.exit(1); }
+    if (!session.alive) {
+      console.error(`Session "${session.name}" is dead. Use 'rcc log' to view output.`);
+      process.exit(1);
+    }
+  }
+
+  const sockPath = getSocketPath(session);
+  if (!IS_WIN && !fs.existsSync(sockPath)) {
+    console.error(`Socket not found: ${sockPath}\nMake sure the rcc server is running.`);
+    process.exit(1);
+  }
+
+  console.log(`\x1b[36mAttaching to \x1b[1m${session.name}\x1b[0m\x1b[36m (${session.sessionId.slice(0, 8)})\x1b[0m`);
+  console.log(`\x1b[90mDetach: Ctrl+] — will NOT kill the session\x1b[0m\n`);
+
+  const socket = net.createConnection(sockPath);
+
+  if (process.stdin.isTTY) process.stdin.setRawMode(true);
+  process.stdin.resume();
+
+  function sendResize() {
+    const cols = process.stdout.columns || 80;
+    const rows = process.stdout.rows    || 24;
+    try { socket.write(`\x00RESIZE:${cols}:${rows}\n`); } catch (_) {}
+  }
+
+  // 拦截 Ctrl+] (0x1d) 作为逃逸键，不传给 PTY
+  const onStdinData = (chunk) => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0x1d) { doDetach(); return; }
+    }
+    try { socket.write(bytes); } catch (_) {}
+  };
+
+  socket.on('connect', () => {
+    sendResize();
+    process.stdout.on('resize', sendResize);
+    process.stdin.on('data', onStdinData);
+    socket.pipe(process.stdout);
+  });
+
+  function doDetach() {
+    process.stdin.removeListener('data', onStdinData);
+    try { socket.unpipe(process.stdout); socket.destroy(); } catch (_) {}
+    process.stdout.removeListener('resize', sendResize);
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  }
+
+  socket.on('error', err => {
+    doDetach();
+    console.error('\r\nSocket error:', err.message);
+    process.exit(1);
+  });
+
+  socket.on('close', () => {
+    doDetach();
+    console.log('\r\n\x1b[36m[Detached]\x1b[0m');
+    process.exit(0);
+  });
+
+  // Ctrl+C 仍发给 PTY（让 claude 自己处理中断），不用来断开
+}
+
+function logCmd(idOrName) {
+  const session = findSession(idOrName);
+  if (!session) { console.error(`Session not found: ${idOrName}`); process.exit(1); }
+  if (!session.logPath || !fs.existsSync(session.logPath)) {
+    console.error(`Log file not found: ${session.logPath}`);
+    process.exit(1);
+  }
+  console.log(`\x1b[36mTailing log for \x1b[1m${session.name}\x1b[0m\x1b[36m → ${session.logPath}\x1b[0m`);
+  console.log(`\x1b[90mCtrl+C to stop\x1b[0m\n`);
+
+  if (IS_WIN) {
+    // Windows: PowerShell Get-Content -Wait
+    const ps = spawn('powershell.exe', ['-Command', `Get-Content -Path "${session.logPath}" -Wait -Tail 50`], {
+      stdio: ['ignore', 'inherit', 'inherit'],
+    });
+    process.on('SIGINT', () => { ps.kill(); process.exit(0); });
+  } else {
+    const tail = spawn('tail', ['-f', session.logPath], { stdio: ['ignore', 'inherit', 'inherit'] });
+    process.on('SIGINT', () => { tail.kill(); process.exit(0); });
+  }
+}
+
+// ── CLI entry ─────────────────────────────────────────────────────────────────
+const [,, cmd, arg] = process.argv;
+
+switch (cmd) {
+  case 'ls':
+  case 'list':
+  case undefined:
+    listSessions();
+    break;
+  case 'attach':
+  case 'a':
+    attachCmd(arg);
+    break;
+  case 'log':
+  case 'l':
+    if (!arg) { console.error('Usage: rcc log <name|id>'); process.exit(1); }
+    logCmd(arg);
+    break;
+  case 'start':
+  case 'stop':
+  case 'restart':
+  case 'status':
+    // 转发给 rcc-server
+    try {
+      require('child_process').execFileSync(
+        path.join(__dirname, 'rcc-server'), [cmd],
+        { stdio: 'inherit' }
+      );
+    } catch (e) { process.exit(e.status || 1); }
+    break;
+  default:
+    console.error(`Unknown command: ${cmd}`);
+    console.error('Usage: rcc [ls | attach [name|id] | log <name|id> | start | stop | restart | status]');
+    process.exit(1);
+}

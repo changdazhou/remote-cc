@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+client/dist/
+
+# 运行时数据
+.env
+*.log
+/tmp/
+
+# 系统
+.DS_Store
+*.swp
+
+# 编辑器
+.vscode/
+.idea/
+
+# 构建缓存
+*.tsbuildinfo
