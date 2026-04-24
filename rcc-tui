@@ -571,16 +571,17 @@ async function pageHistorySessions(info, project) {
   if (idx === null || items[idx]?._type === 'back') return pageHistory(info);
 
   const sess = items[idx]._data;
+  const sessCwd = sess.cwd || '~';
 
   // 确认并自定义名称
   wr(A.clear + A.show);
   wr('\n' + ctr(A.b + '恢复对话' + A.R) + '\n\n' + hr() + '\n\n');
   wr(A.gray + '  预览: ' + (sess.lastMessage || '(无)') + '\n');
-  wr('  目录: ' + (sess.cwd || '-') + '\n');
+  wr('  目录: ' + sessCwd + '\n');
   wr('  消息: ' + sess.messageCount + ' 条\n');
   wr('  工作目录留空则返回\n\n' + A.R);
 
-  const workingDir = await input('工作目录', '');
+  const workingDir = await input('工作目录', sessCwd);
   if (!workingDir.trim()) return pageHistorySessions(info, project);
 
   const base = path.basename(workingDir.trim()) || 'session';
