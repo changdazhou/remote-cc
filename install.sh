@@ -234,14 +234,26 @@ sed -i "s|RCC_DIR=\"/paddle/project/local_tools/remote_cc\"|RCC_DIR=\"$SCRIPT_DI
 step "启动服务"
 
 if confirm "y" "现在启动 RemoteCC 服务?"; then
-  pkill -f "node.*index.js" 2>/dev/null || true; sleep 1
+  # 停止旧服务：先发 SIGTERM，等进程消失后再清除残留文件
+  pkill -f "node.*index.js" 2>/dev/null || true
+  for _i in $(seq 1 10); do
+    pgrep -f "node.*index.js" &>/dev/null || break; sleep 0.3
+  done
+  rm -f "$HOME/.rcc/local.token" "$HOME/.rcc/server.lock"
+
   (cd "$SCRIPT_DIR/server"
     export RC_USER="$RC_USER" RC_PASS="$RC_PASS" PORT="$PORT" CLAUDE_BIN="$CLAUDE_BIN"
     [[ -n "$IS_SANDBOX_FLAG" ]] && export IS_SANDBOX=1
     node index.js > /tmp/rcc.log 2>&1) &
   SVC_PID=$!
-  sleep 2
-  if kill -0 "$SVC_PID" 2>/dev/null; then
+
+  # 以 local.token 出现作为"服务就绪"的判断依据，等待最多 5s
+  for _i in $(seq 1 10); do
+    sleep 0.5
+    [[ -f "$HOME/.rcc/local.token" ]] && break
+  done
+
+  if [[ -f "$HOME/.rcc/local.token" ]]; then
     ok "服务已启动（pid $SVC_PID，端口 $PORT）"
   else
     err "服务启动失败，查看日志: cat /tmp/rcc.log"
