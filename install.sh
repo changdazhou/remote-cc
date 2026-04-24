@@ -8,6 +8,40 @@ set -euo pipefail
 R='\033[0m' B='\033[1m' D='\033[2m'
 CYAN='\033[36m' GREEN='\033[32m' YELLOW='\033[33m' RED='\033[31m' GRAY='\033[90m'
 
+# ── 参数解析（banner 之前，set -u 之后需先初始化） ──────────────────────────
+# 用法: bash install.sh [-u user] [-p pass] [-P port] [-s] [-y] [-h]
+_USER="" _PASS="" _PORT="" _SANDBOX=0 _YES=0 NON_INTERACTIVE=0
+
+while getopts "u:p:P:syh" opt 2>/dev/null; do
+  case $opt in
+    u) _USER="$OPTARG" ;;
+    p) _PASS="$OPTARG" ;;
+    P) _PORT="$OPTARG" ;;
+    s) _SANDBOX=1 ;;
+    y) _YES=1 ;;
+    h)
+      echo ""
+      echo "  用法: bash install.sh [选项]"
+      echo ""
+      echo "  选项:"
+      echo "    -u <user>   管理员用户名（默认: admin）"
+      echo "    -p <pass>   管理员密码（必填，传参时跳过交互）"
+      echo "    -P <port>   监听端口（默认: 8310）"
+      echo "    -s          启用 IS_SANDBOX 危险模式"
+      echo "    -y          自动确认所有提示（CI/脚本模式）"
+      echo "    -h          显示此帮助"
+      echo ""
+      echo "  示例（非交互一键安装）:"
+      echo "    bash install.sh -u admin -p mypassword -P 8310 -s -y"
+      echo ""
+      exit 0 ;;
+    *) ;;
+  esac
+done
+
+# 传入密码则进入非交互模式
+[[ -n "$_PASS" || "$_YES" == "1" ]] && NON_INTERACTIVE=1
+
 W=$(tput cols 2>/dev/null || echo 80)
 HR=$(printf '%0.s─' $(seq 1 $W))
 
@@ -48,7 +82,7 @@ input() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-print_banner
+[[ "$NON_INTERACTIVE" == "0" ]] && print_banner
 echo -e "  欢迎使用 ${B}RemoteCC${R} 一键部署向导\n"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -110,35 +144,44 @@ fi
 step "检测沙箱环境"
 
 IS_SANDBOX_FLAG=""
-if [[ "${IS_SANDBOX:-}" == "1" ]]; then
-  warn "检测到 IS_SANDBOX=1 环境变量，将启用危险模式"
+if [[ "$_SANDBOX" == "1" || "${IS_SANDBOX:-}" == "1" ]]; then
+  warn "启用危险模式（IS_SANDBOX=1）"
   IS_SANDBOX_FLAG="IS_SANDBOX=1 "
 else
-  info "未检测到沙箱环境，使用普通模式"
-  info "如需危险模式，可在启动时手动设置 IS_SANDBOX=1"
+  info "普通模式（如需危险模式：-s 参数或 IS_SANDBOX=1 环境变量）"
 fi
 
 # ── Step 4: 服务配置 ──────────────────────────────────────────────────────────
 step "配置服务参数"
 
-echo -e "  ${GRAY}配置 Web 界面的登录账号和监听端口，安装完成后用此账号登录浏览器界面。${R}\n"
+if [[ "$NON_INTERACTIVE" == "1" ]]; then
+  # 非交互模式：直接用参数，校验必要字段
+  RC_USER="${_USER:-admin}"
+  RC_PASS="${_PASS}"
+  PORT="${_PORT:-8310}"
+  [[ -z "$RC_PASS" ]] && err "非交互模式必须提供密码: -p <password>"
+  [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "端口号无效: $PORT"
+  ok "用户名: $RC_USER  端口: $PORT"
+else
+  echo -e "  ${GRAY}配置 Web 界面的登录账号和监听端口，安装完成后用此账号登录浏览器界面。${R}\n"
 
-RC_USER=$(input "admin" "管理员用户名（Web 登录用）")
+  RC_USER=$(input "${_USER:-admin}" "管理员用户名（Web 登录用）")
 
-while true; do
-  echo -n "  管理员密码（Web 登录用，输入不显示）: " > /dev/tty; read -rs RC_PASS < /dev/tty; echo "" > /dev/tty
-  [[ -z "$RC_PASS" ]] && { echo -e "  ${RED}✗ 密码不能为空${R}"; continue; }
-  echo -n "  再次输入密码确认: " > /dev/tty; read -rs RC_PASS2 < /dev/tty; echo "" > /dev/tty
-  [[ "$RC_PASS" != "$RC_PASS2" ]] && { echo -e "  ${RED}✗ 两次密码不一致，请重新输入${R}"; continue; }
-  [[ "$RC_PASS" == "changeme" ]] && warn "建议使用更安全的密码"
-  break
-done
+  while true; do
+    echo -n "  管理员密码（Web 登录用，输入不显示）: " > /dev/tty; read -rs RC_PASS < /dev/tty; echo "" > /dev/tty
+    [[ -z "$RC_PASS" ]] && { echo -e "  ${RED}✗ 密码不能为空${R}"; continue; }
+    echo -n "  再次输入密码确认: " > /dev/tty; read -rs RC_PASS2 < /dev/tty; echo "" > /dev/tty
+    [[ "$RC_PASS" != "$RC_PASS2" ]] && { echo -e "  ${RED}✗ 两次密码不一致，请重新输入${R}"; continue; }
+    [[ "$RC_PASS" == "changeme" ]] && warn "建议使用更安全的密码"
+    break
+  done
 
-PORT=$(input "8310" "监听端口（浏览器访问 http://<IP>:<端口>）")
-[[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "端口号无效: $PORT"
+  PORT=$(input "${_PORT:-8310}" "监听端口（浏览器访问 http://<IP>:<端口>）")
+  [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "端口号无效: $PORT"
 
-echo ""
-ok "配置完成：用户名 ${RC_USER}，端口 ${PORT}"
+  echo ""
+  ok "配置完成：用户名 ${RC_USER}，端口 ${PORT}"
+fi
 
 # ── Step 5: 更新 Claude 路径到 pty-manager ───────────────────────────────────
 step "写入配置"
@@ -233,7 +276,7 @@ sed -i "s|RCC_DIR=\"/paddle/project/local_tools/remote_cc\"|RCC_DIR=\"$SCRIPT_DI
 # ── Step 9: 启动服务 ──────────────────────────────────────────────────────────
 step "启动服务"
 
-if confirm "y" "现在启动 RemoteCC 服务?"; then
+if [[ "$NON_INTERACTIVE" == "1" && "$_YES" == "1" ]] || confirm "y" "现在启动 RemoteCC 服务?"; then
   # 用 rcc-server stop 正确停止 watchdog + node（同时清 pid 文件）
   bash "$SCRIPT_DIR/rcc-server" stop 2>/dev/null || true
   # 额外等待 node 进程彻底消失，防止 lock 文件残留

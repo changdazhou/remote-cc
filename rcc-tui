@@ -279,6 +279,7 @@ function doAttach(sp, sname, onDetach) {
     sock.removeListener('data', onSockData);
     try { sock.destroy(); } catch (_) {}
     process.stdout.removeListener('resize', sendResize);
+    clearInterval(watchdog);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.resume();
     // 重置终端状态，清除 Claude 可能留下的 alternate screen 等
@@ -286,6 +287,22 @@ function doAttach(sp, sname, onDetach) {
     wr('\r\n' + A.cyan + '[已断开 — 按任意键返回菜单]' + A.R + '\n');
     setTimeout(onDetach, 600);
   };
+
+  // 服务掉线监测：每 3s 检查一次，服务消失则强制退出 TUI
+  const watchdog = setInterval(() => {
+    const info = serverInfo();
+    if (!isServerAlive(info)) {
+      clearInterval(watchdog);
+      process.stdin.removeListener('data', onStdinData);
+      sock.removeListener('data', onSockData);
+      try { sock.destroy(); } catch (_) {}
+      process.stdout.removeListener('resize', sendResize);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
+      wr('\r\n' + A.red + '[服务已停止，rcc-tui 退出]' + A.R + '\n');
+      process.exit(0);
+    }
+  }, 3000);
 
   sock.on('error', e => { wr('\r\n' + A.red + '[Socket 错误: ' + e.message + ']' + A.R + '\n'); detach(); });
   sock.on('close', detach);
