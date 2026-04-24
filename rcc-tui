@@ -291,7 +291,7 @@ function doAttach(sp, sname, onDetach) {
   // 服务掉线监测：每 3s 检查一次，服务消失则强制退出 TUI
   const watchdog = setInterval(() => {
     const info = serverInfo();
-    if (!isServerAlive(info)) {
+    if (!serverAlive(info)) {
       clearInterval(watchdog);
       process.stdin.removeListener('data', onStdinData);
       sock.removeListener('data', onSockData);
