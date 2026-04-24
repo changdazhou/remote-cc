@@ -1,12 +1,19 @@
 # 开发指南
 
+## 获取代码
+
+```bash
+git clone https://github.com/changdazhou/remote-cc.git
+cd remote-cc
+```
+
 ## 开发环境启动
 
 ### 后端（热重载）
 
 ```bash
 cd server
-RC_USER=admin RC_PASS=changeme PORT=3000 node --watch index.js
+RC_USER=admin RC_PASS=yourpassword PORT=8310 node --watch index.js
 ```
 
 ### 前端（Vite dev server）
@@ -117,7 +124,7 @@ cd client && npm run build
 ls -lh client/dist/assets/
 
 # 运行生产环境
-cd server && RC_USER=admin RC_PASS=secret PORT=8310 node index.js
+cd server && RC_USER=admin RC_PASS=yourpassword PORT=8310 node index.js
 ```
 
 ## 代码规范
