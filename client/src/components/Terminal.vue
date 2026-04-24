@@ -51,7 +51,6 @@ let lastW = 0, lastH = 0;
 let userScrolled = false;       // 用户是否主动上划
 let scrollResumeTimer = null;   // 停止滑动后恢复锁底的计时器
 const pendingWrites = [];        // 用户上划时缓存的输出
-const MAX_PENDING = 200;         // 最多缓存行数，防止内存无限增长
 
 // 检测用户是否滑到底部附近（20px 内认为在底部）
 function isNearBottom() {
@@ -83,9 +82,10 @@ function flushPending() {
 // 对外暴露的 write：上划时缓存，否则直接写并锁底
 function smartWrite(data) {
   if (userScrolled) {
-    if (pendingWrites.length < MAX_PENDING) pendingWrites.push(data);
-    // 超出上限时丢弃最老的，保留最新
-    else { pendingWrites.shift(); pendingWrites.push(data); }
+    // 超出上限（跟 scrollback 一致）时丢弃最老的，保留最新
+    pendingWrites.push(data);
+    const max = settings.scrollback || 5000;
+    if (pendingWrites.length > max) pendingWrites.shift();
   } else {
     term?.write(data);
     // 锁底：写入后滚到最底
