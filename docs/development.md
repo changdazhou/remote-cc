@@ -1,165 +1,177 @@
-# 开发指南
+# 开发指南 / Development Guide
 
-## 获取代码
+[中文](#中文) | [English](#english)
+
+---
+
+## 中文
+
+### 获取代码
 
 ```bash
 git clone https://github.com/changdazhou/remote-cc.git
 cd remote-cc
 ```
 
-## 开发环境启动
+### 开发环境启动
 
-### 后端（热重载）
+#### 后端（热重载）
 
 ```bash
 cd server
 RC_USER=admin RC_PASS=yourpassword PORT=8310 node --watch index.js
 ```
 
-### 前端（Vite dev server）
+#### 前端（Vite dev server）
 
 ```bash
 cd client
 npm run dev
+# 访问 http://localhost:5173，自动代理 API 和 WS 到 localhost:8310
 ```
 
-Vite dev server 运行在 `http://localhost:5173`，自动代理 API 和 WS 到 `localhost:3000`。
-
-## 项目结构详解
+### 目录结构
 
 ```
-remote_cc/
+remote-cc/
 ├── server/
-│   ├── index.js        # HTTP + WS 入口，路由注册
-│   ├── auth.js         # Token 认证中间件
-│   ├── pty-manager.js  # PTY 会话池，核心逻辑
+│   ├── index.js        # HTTP + WS 入口
+│   ├── auth.js         # Token 认证 + 本地 token
+│   ├── pty-manager.js  # PTY 会话池（核心）
 │   └── history.js      # ~/.claude/projects/ 读取
-│
 ├── client/
-│   ├── index.html      # 入口 HTML
-│   ├── vite.config.js  # Vite 配置（dev proxy）
 │   └── src/
-│       ├── main.js          # Vue app 挂载，主题同步到 html 属性
-│       ├── App.vue          # 主组件：认证、路由、WS管理、会话管理
+│       ├── App.vue          # 主组件：认证/路由/WS/会话管理
 │       ├── router.js        # Hash 路由
 │       ├── settings.js      # 全局设置 + 主题/图标定义
-│       ├── themes.js        # xterm.js 终端配色方案
+│       ├── themes.js        # xterm.js 终端配色
 │       ├── i18n.js          # 中英文字典
-│       ├── api/
-│       │   └── index.js     # REST API + WS 工厂
 │       └── components/
-│           ├── Terminal.vue         # xterm.js 渲染
-│           ├── SymbolBar.vue        # 符号快捷键栏
+│           ├── Terminal.vue         # xterm.js 渲染（纯展示）
+│           ├── SymbolBar.vue        # CC/SH 双模式快捷键栏
 │           ├── ConversationList.vue # 首页会话列表
 │           ├── NewConversation.vue  # 新建/恢复对话
 │           ├── SettingsPage.vue     # 设置页
-│           ├── LogViewer.vue        # 会话日志查看
-│           └── HelpPage.vue         # 帮助文档页
-│
-├── docs/
-│   ├── installation.md  # 安装指南
-│   ├── usage.md         # 使用手册
-│   ├── api.md           # API 文档
-│   ├── architecture.md  # 架构说明
-│   └── development.md   # 开发指南（本文档）
-│
-├── rcc         # 本地终端连接工具（Node.js 脚本）
-├── rcc-server  # 守护进程管理脚本（bash）
-└── README.md
+│           ├── LogViewer.vue        # 日志查看
+│           └── HelpPage.vue         # 内嵌文档阅读
+├── docs/               # 双语文档
+├── rcc                 # 统一 CLI 入口
+├── rcc-tui             # 交互式 TUI
+├── rcc-server          # 守护进程管理（bash）
+└── install.sh          # 一键部署脚本
 ```
 
-## 添加新功能的指导
+### 添加颜色主题
 
-### 添加新的颜色主题
+1. `client/src/themes.js` 添加 xterm 配色
+2. `client/src/settings.js` 的 `COLOR_THEMES` 数组添加条目（含 `icons` 字段）
+3. `client/src/App.vue` 全局 CSS 添加 CSS 变量
 
-1. 在 `client/src/themes.js` 添加 xterm 配色：
+### 添加 WS 消息类型
 
-```js
-my_theme: {
-  bg: '#1a1a2e',
-  term: { background: '#1a1a2e', foreground: '#eee', cursor: '#f00', ... }
-}
-```
-
-2. 在 `client/src/settings.js` 的 `COLOR_THEMES` 数组添加：
-
-```js
-{
-  id: 'my_theme',
-  name: 'My Theme',
-  accent: '#f00',
-  dark: true,
-  icons: { home: '⌂', settings: '⚙', ... }
-}
-```
-
-3. 在 `client/src/App.vue` 的全局 CSS 添加 CSS 变量：
-
-```css
-[data-theme="my_theme"] {
-  --neon: #f00; --neon2: #f80; --bg: #1a1a2e; ...
-}
-```
-
-### 添加新的 WS 消息类型
-
-1. 在 `server/pty-manager.js` 的 `handleMessage` switch 中添加 case
-2. 在 `client/src/App.vue` 的 `connectEntryWS` 的 `ws.onmessage` 中处理
+1. `server/pty-manager.js` 的 `handleMessage` switch 添加 case
+2. `client/src/App.vue` 的 `connectEntryWS` `onmessage` 处理
 3. 更新 `docs/api.md`
 
-### 添加新的设置项
+### 代码规范
 
-1. 在 `client/src/settings.js` 的 `DEFAULTS` 中添加字段
-2. 在 `client/src/components/SettingsPage.vue` 中添加 UI
-3. 在需要响应该设置的组件中 `watch(() => settings.xxx, ...)`
-4. 在 `client/src/i18n.js` 中添加翻译
+- Vue 组件：`<script setup>` + Composition API
+- CSS：优先用 `var(--neon)` 等 CSS 变量，跟随主题
+- 错误处理：WS/PTY 操作用 try/catch，不向用户暴露原始错误
 
-## 构建和发布
+### 构建与发布
 
 ```bash
-# 构建前端
 cd client && npm run build
-
-# 检查产物大小
-ls -lh client/dist/assets/
-
-# 运行生产环境
-cd server && RC_USER=admin RC_PASS=yourpassword PORT=8310 node index.js
+cd ../server && RC_USER=admin RC_PASS=yourpassword PORT=8310 node index.js
 ```
 
-## 代码规范
+---
 
-- **Vue 组件**：使用 `<script setup>` + Composition API
-- **CSS**：优先使用 CSS 变量（`var(--neon)` 等），跟随主题
-- **错误处理**：WS/PTY 操作用 try/catch 包裹，不向用户暴露原始错误
-- **命名**：
-  - 组件：PascalCase (`ConversationList.vue`)
-  - 函数：camelCase (`openSession`)
-  - CSS class：kebab-case (`.cl-item`)
-  - 事件：kebab-case (`@session-id`)
+## English
 
-## 常见问题
-
-### node-pty 编译失败
+### Get the Code
 
 ```bash
-npm install --build-from-source node-pty
-# 或者
-node-gyp rebuild --directory node_modules/node-pty
+git clone https://github.com/changdazhou/remote-cc.git
+cd remote-cc
 ```
 
-### WS 连接失败（CORS/代理）
+### Dev Environment
 
-开发时确认 `vite.config.js` 的 proxy 配置正确指向后端端口。
+#### Backend (hot reload)
 
-### PTY 乱码
-
-确保终端环境变量正确：
-
-```js
-env: {
-  ...process.env,
-  TERM: 'xterm-256color',
-  COLORTERM: 'truecolor',
-}
+```bash
+cd server
+RC_USER=admin RC_PASS=yourpassword PORT=8310 node --watch index.js
 ```
+
+#### Frontend (Vite dev server)
+
+```bash
+cd client
+npm run dev
+# Open http://localhost:5173, API and WS proxied to localhost:8310
+```
+
+### Project Structure
+
+```
+remote-cc/
+├── server/
+│   ├── index.js        # HTTP + WS entry point
+│   ├── auth.js         # Token auth + local token
+│   ├── pty-manager.js  # PTY session pool (core)
+│   └── history.js      # ~/.claude/projects/ reader
+├── client/
+│   └── src/
+│       ├── App.vue          # Main: auth/routing/WS/session mgmt
+│       ├── router.js        # Hash router
+│       ├── settings.js      # Global settings + themes/icons
+│       ├── themes.js        # xterm.js color schemes
+│       ├── i18n.js          # zh/en dictionary
+│       └── components/
+│           ├── Terminal.vue         # xterm.js renderer (pure display)
+│           ├── SymbolBar.vue        # CC/SH dual-mode symbol bar
+│           ├── ConversationList.vue # Home session list
+│           ├── NewConversation.vue  # New/resume conversation
+│           ├── SettingsPage.vue     # Settings
+│           ├── LogViewer.vue        # Log viewer
+│           └── HelpPage.vue         # Embedded docs reader
+├── docs/               # Bilingual documentation
+├── rcc                 # Unified CLI entry
+├── rcc-tui             # Interactive TUI
+├── rcc-server          # Daemon manager (bash)
+└── install.sh          # One-click deploy script
+```
+
+### Adding a Color Theme
+
+1. Add xterm color scheme in `client/src/themes.js`
+2. Add entry to `COLOR_THEMES` in `client/src/settings.js` (include `icons` field)
+3. Add CSS variables in the global `<style>` block in `client/src/App.vue`
+
+### Adding a WS Message Type
+
+1. Add `case` in `handleMessage` switch in `server/pty-manager.js`
+2. Handle in `connectEntryWS` `onmessage` in `client/src/App.vue`
+3. Update `docs/api.md`
+
+### Code Style
+
+- Vue: `<script setup>` + Composition API
+- CSS: prefer `var(--neon)` CSS variables, theme-aware
+- Error handling: wrap WS/PTY ops in try/catch, don't expose raw errors to users
+
+### Build & Run
+
+```bash
+cd client && npm run build
+cd ../server && RC_USER=admin RC_PASS=yourpassword PORT=8310 node index.js
+```
+
+---
+
+## License / 许可证
+
+Apache 2.0 — see [LICENSE](../LICENSE)

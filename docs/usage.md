@@ -1,325 +1,261 @@
-# 使用手册
+# 使用手册 / Usage Manual
 
-## 多端协同工作原理
-
-RemoteCC 的核心价值在于**一个 PTY 进程，多个同步观察者**。
-
-```
-Claude Code PTY（持续运行）
-        │
-        ├──▶ 浏览器 WebSocket（手机/平板/PC）
-        ├──▶ rcc attach（本地终端，Unix Socket）
-        └──▶ rcc-tui（交互式 TUI，本地）
-```
-
-无论你从哪个端输入，所有端都能实时看到输出。PTY 进程独立于任何客户端运行——关闭浏览器、断开 SSH、离开电脑，Claude 都在后台继续工作，下次连接即可无缝恢复。
-
-## 基本操作流程
-
-```
-登录 → 对话列表 → 新建/恢复对话 → 终端交互 → 切换/管理会话
-```
-
-## 登录
-
-访问 `http://<server>:<port>`，输入管理员账号密码登录。
-
-- 登录状态保存在 `localStorage`，Token 有效期 30 天，无需每次重新登录
-- 上次登录的用户名自动预填
-
-## 对话列表（首页）
-
-登录后进入对话列表，展示所有 PTY 会话：
-
-| 元素 | 说明 |
-|------|------|
-| 绿点 `●` | 会话正在运行 |
-| 灰点 `○` | 会话已结束（5秒后自动移除） |
-| 会话名 | 默认为工作目录名，双击可改名 |
-| 工作目录 | `/paddle/project` → `~/project` |
-| 时间 | 最后活跃时间 |
-| `≡` | 查看会话输出日志 |
-| `✕` | 关闭（存活）或删除（已结束）会话 |
-
-点击会话卡片进入终端。
-
-## 新建对话
-
-点击右上角 `＋ 新建` 或首页 `＋ 新建` 按钮：
-
-### New 标签
-
-| 字段 | 说明 |
-|------|------|
-| 工作目录 | Claude Code 启动的目录，默认 `/paddle` |
-| 会话名称 | 留空自动使用目录名 |
-| 快捷目录 | 点击 `~/` `/root` `/tmp` 快速填入 |
-
-### Resume 标签（恢复历史）
-
-读取 `~/.claude/projects/` 下的历史对话：
-
-1. 展开项目目录，查看历史会话列表
-2. 点击某条会话，展开内联操作区
-3. 可修改会话名称
-4. 点击 `恢复 ▶` 以 `--resume <sessionId>` 方式启动
-
-## 终端操作
-
-### 顶栏
-
-```
-[‹]  [会话名 ▾]  ···  [⌂] [⚙]
-```
-
-| 按钮 | 功能 |
-|------|------|
-| 会话名 ▾ | 下拉切换会话、关闭当前会话 |
-| ⌂ | 返回首页（不关闭 PTY） |
-| ⚙ | 打开设置 |
-
-### 符号快捷键栏
-
-位于终端底部，手机端尤为实用：
-
-**CC 模式**（默认，蓝绿色系）：
-
-| 按键 | 功能 |
-|------|------|
-| `M` | Shift+Tab — 切换 Claude Code 内部模式（Plan/Auto/Act） |
-| `Esc` | 取消当前输入 |
-| `Tab` | 自动补全 |
-| `/` | 输入 slash 命令 |
-| `!` | 切换到 Shell 模式（自动） |
-| `↑↓←→` | 方向键 |
-| `⏎` | 回车 |
-
-**Shell 模式**（黄色系，行首输入 `!` 自动切换）：
-
-- 第一排：`Tab` `Esc` `↑↓←→` `⏎`
-- 第二排：`/` `~` `-` `|` `&` `;` `>`
-- 长按 `|`/`&`/`>` 显示变体（`||`/`&&`/`>>`/`2>`）
-- 删除行首 `!` 自动切回 CC 模式
-
-### 复制粘贴
-
-| 操作 | 方法 |
-|------|------|
-| 复制 | 鼠标选中文本 → 自动复制到剪贴板（HTTPS 环境）|
-| 复制 | 右键菜单 → Copy，或 Ctrl+Shift+C |
-| 粘贴 | 右键菜单 → Paste，或 Ctrl+Shift+V |
-| 粘贴（HTTP） | 右键 Paste → 聚焦输入框 → 手动 Ctrl+V |
-
-### 右键菜单
-
-在终端任意位置右键：
-
-- **Copy** — 复制选中内容
-- **Paste** — 粘贴剪贴板
-- **Select All** — 全选
-- **Clear** — 清屏
-
-## 会话管理
-
-### 多会话切换
-
-点击顶栏的会话名下拉菜单，可：
-- 切换到其他活跃会话
-- 关闭当前会话（弹窗确认）
-- 新建对话
-
-### 会话持久化
-
-- PTY 进程在浏览器关闭后继续运行（后台持久）
-- 重新打开页面，自动恢复上次的会话
-- 通过 URL `/#/session/<id>` 可直接跳转到指定会话
-
-### 多端协同
-
-同一个 PTY session 可以同时从浏览器和本地终端访问：
-
-```bash
-rcc attach <session-name>
-```
-
-两端实时同步，输入输出完全共享。
-
-## 本地命令行工具 `rcc`
-
-### 查看会话列表
-
-```bash
-rcc ls
-# 或
-rcc list
-```
-
-输出示例：
-```
-  Sessions
-
-  ● live  my-project
-       id:  abc12345-...
-      cwd:  /paddle/project
-     last:  5m ago  [socket ok]
-      log:  /root/.rcc/logs/abc12345-....log
-```
-
-### 连接到会话
-
-```bash
-rcc attach                    # 只有一个活跃会话时直接连接
-rcc attach my-project         # 按名称连接
-rcc attach abc12345           # 按 ID 前缀连接
-```
-
-- 连接后本地终端与浏览器完全同步
-- 按 Ctrl+C 或关闭终端窗口断开连接（不会终止 PTY）
-- 本地终端 resize 会同步到 PTY
-
-### 查看日志
-
-```bash
-rcc log my-project
-```
-
-实时 `tail -f` 会话输出日志（只读，不影响 PTY）。
-
-## 设置页
-
-点击顶栏 `⚙` 打开设置：
-
-### 外观
-
-- **UI 风格**：
-  - `Cyberpunk` — 霓虹发光，高对比
-  - `Minimal` — 极简直角，无装饰
-  - `Glass` — 毛玻璃半透明
-- **颜色主题**：
-  - 深色：Cyber / Mocha / Gruvbox / Nord / Dracula / Solarized
-  - 浅色：Latte / Paper / Day
-
-### 终端
-
-- 字体、字号（8-24px）、行高（1.0-2.0）
-- 光标样式：block / underline / bar
-- 光标闪烁开关
-- 回滚缓冲行数（500-50000）
-- 符号快捷键栏开关
-
-### 连接
-
-- 初始重连延迟（0.5-10s）
-- 最大重连延迟（5-60s）
-
-### 语言
-
-支持中文（zh）和 English（en）切换，实时生效。
-
-## 帮助文档
-
-点击顶栏 `?` 或导航到 `帮助` 可在 Web 端阅读本文档。
-
-## 键盘快捷键（桌面端）
-
-| 快捷键 | 功能 |
-|--------|------|
-| Ctrl+Shift+C | 复制选中文本 |
-| Ctrl+Shift+V | 粘贴 |
-| Shift+Tab | 切换 Claude 模式 |
-
-## URL 路由
-
-| URL | 说明 |
-|-----|------|
-| `/#/` | 首页（对话列表） |
-| `/#/new` | 新建对话 |
-| `/#/session/:id` | 打开指定 session |
-| `/#/settings` | 设置页 |
+[中文](#中文) | [English](#english)
 
 ---
 
-## rcc-tui 交互式终端 UI
+## 中文
 
-本地终端专用，无需登录，直接通过 Unix Socket 连接。
+### 多端协同工作原理
+
+RemoteCC 的核心是**一个 PTY 进程，多个同步观察者**：
+
+```
+Claude Code PTY（持续运行）
+        ├──▶ 浏览器 WebSocket（手机/平板/PC）
+        ├──▶ rcc-tui（本地交互式 TUI）
+        └──▶ rcc attach（本地终端直连）
+```
+
+无论从哪端输入，所有端实时可见。PTY 独立于客户端运行——关闭浏览器或断开 SSH，Claude 在后台继续工作。
+
+---
+
+### Web 界面
+
+浏览器访问 `http://<server>:8310` 登录后使用。
+
+#### 对话列表（首页）
+
+| 元素 | 说明 |
+|------|------|
+| 绿点 ● | 会话运行中 |
+| 灰点 ○ | 会话已结束（5秒后自动移除） |
+| 会话名 | 默认为目录名，双击可改名 |
+| 时间 | 最后活跃时间 |
+| `≡` | 查看日志 |
+| `✕` | 关闭/删除会话 |
+
+#### 新建对话
+
+- **New 标签**：输入工作目录和会话名 → 启动
+- **Resume 标签**：从 `~/.claude/projects/` 选历史对话 → 以 `--resume` 恢复
+
+#### 终端操作
+
+| 快捷键 | 功能 |
+|--------|------|
+| Shift+Tab | 切换 Claude 内部模式（Plan/Auto/Act） |
+| Ctrl+Shift+C | 复制选中内容 |
+| Ctrl+Shift+V | 粘贴 |
+| 右键 | 上下文菜单（Copy/Paste/Clear） |
+
+#### 符号快捷键栏
+
+- **CC 模式**（蓝色）：`M`（Shift+Tab）`Esc` `Tab` `/` `!` `↑↓←→` `⏎`
+- **SH 模式**（黄色，行首输入 `!` 自动切换）：两排 Linux 常用符号
+- `Ctrl+]` 在会话内断开回菜单
+
+#### 设置页（右上角 ⚙）
+
+- **外观**：UI 风格（Cyberpunk/Minimal/Glass）+ 9 套颜色主题
+- **终端**：字体/字号/行高/光标/回滚行数/符号栏
+- **连接**：重连延迟
+- **语言**：中文 / English
+
+---
+
+### 命令行工具
+
+#### rcc
+
+统一管理入口：
+
+```bash
+rcc start         # 启动服务（守护进程）
+rcc stop          # 停止服务
+rcc restart       # 重启服务
+rcc status        # 查看服务状态
+rcc ls            # 列出所有会话
+rcc attach        # 接入唯一活跃会话
+rcc attach <name> # 按名称接入
+rcc log <name>    # tail -f 会话日志
+```
+
+**断开方式**：`Ctrl+]`（不终止 PTY）
+
+#### rcc-tui（推荐）
+
+本地交互式 TUI，无需登录，直接通过 Unix Socket 连接：
 
 ```bash
 rcc-tui
 ```
 
-### 启动界面
+启动后显示大字 banner 和会话列表：
 
 ```
   ██████╗  ██████╗ ██████╗
-  ██╔══██╗██╔════╝██╔════╝
-  ██████╔╝██║     ██║
-  ██╔══██╗██║     ██║
-  ██║  ██║╚██████╗╚██████╗
-  ╚═╝  ╚═╝ ╚═════╝ ╚═════╝
-  Remote Claude Code
-
-  ● 服务运行中  :8310  pid 12345
+  ...
+  ● 服务运行中  :8310
 
   对话列表
-  ────────────────────────────────
-
+  ─────────────────────────
    › ● my-project  ~/project  3m ago
-     ○ old-session  2h ago
-     ···················
      ＋  新建对话
      ⏎  恢复历史对话
-     ↻  刷新
      ✕  退出
-
-  ↑↓ 选择   Enter 确认   q/Esc 返回   Ctrl+C 退出
 ```
 
-### 键盘操作
+**键盘操作**：
 
 | 按键 | 功能 |
 |------|------|
 | `↑` / `↓` | 移动光标 |
-| `Ctrl+P` / `Ctrl+N` | 同上（vim 风格） |
 | `Enter` | 确认/进入 |
-| `q` 或 `Esc` | 返回上一页（不退出程序） |
+| `q` / `Esc` | 返回上一页 |
 | `Ctrl+C` | 退出 rcc-tui |
-| **`Ctrl+]`** | **在会话内断开，返回菜单（不终止 PTY）** |
+| **`Ctrl+]`** | **在会话内断开，返回菜单** |
 
-> `Ctrl+]` 是历史上 telnet 的逃逸键。在 Claude 会话中，`Ctrl+C` 会被 Claude 捕获（用于中断生成），`Ctrl+]` 不会被 PTY 消费，是最可靠的断开方式。
+---
 
-### 页面流程
+### URL 路由
+
+| URL | 说明 |
+|-----|------|
+| `/#/` | 首页 |
+| `/#/new` | 新建对话 |
+| `/#/session/:id` | 打开指定会话 |
+| `/#/settings` | 设置页 |
+
+---
+
+## English
+
+### How Multi-Client Sync Works
+
+RemoteCC's core is **one PTY process, multiple synchronized observers**:
 
 ```
-主菜单（对话列表）
-├── 选活跃会话
-│   ├── ▶ 接入会话  →  全双工 PTY（Ctrl+] 断开回菜单）
-│   ├── ≡ 查看日志  →  tail -f（Ctrl+C 返回菜单）
-│   └── ← 返回
-├── 选已结束会话
-│   ├── ≡ 查看历史日志
-│   └── ← 返回
-├── 新建对话
-│   ├── 工作目录（留空 = 返回上一页）
-│   ├── 会话名称（留空 = 用目录名）
-│   └── 自动创建 + 接入
-└── 恢复历史对话
-    ├── 选 ~/.claude/projects/ 中的项目
-    ├── 选历史会话（显示预览/消息数/时间）
-    ├── 确认工作目录（留空 = 返回）
-    └── 以 --resume <id> 启动 + 接入
+Claude Code PTY (always running)
+        ├──▶ Browser WebSocket (phone/tablet/PC)
+        ├──▶ rcc-tui (local interactive TUI)
+        └──▶ rcc attach (local terminal direct connect)
 ```
 
-### 与浏览器协同
+Input from any client is visible to all others in real time. The PTY runs independently — closing the browser or dropping SSH does not interrupt Claude.
 
-`rcc-tui` 接入的是与浏览器**完全相同**的 PTY 会话：
+---
+
+### Web Interface
+
+Open `http://<server>:8310` in a browser and log in.
+
+#### Conversation List (Home)
+
+| Element | Description |
+|---------|-------------|
+| Green ● | Session running |
+| Gray ○ | Session ended (auto-removed after 5s) |
+| Session name | Defaults to directory name; double-click to rename |
+| Time | Last active time |
+| `≡` | View log |
+| `✕` | Close/delete session |
+
+#### New Conversation
+
+- **New tab**: Enter working directory and session name → start
+- **Resume tab**: Browse `~/.claude/projects/` history → resume with `--resume`
+
+#### Terminal Shortcuts
+
+| Shortcut | Function |
+|----------|----------|
+| Shift+Tab | Switch Claude mode (Plan/Auto/Act) |
+| Ctrl+Shift+C | Copy selection |
+| Ctrl+Shift+V | Paste |
+| Right-click | Context menu (Copy/Paste/Clear) |
+
+#### Symbol Bar
+
+- **CC mode** (blue): `M`(Shift+Tab) `Esc` `Tab` `/` `!` `↑↓←→` `⏎`
+- **SH mode** (yellow, auto-switch when `!` is first char): two rows of Linux symbols
+- `Ctrl+]` detaches from session back to menu
+
+#### Settings (⚙ top right)
+
+- **Appearance**: UI style (Cyberpunk/Minimal/Glass) + 9 color themes
+- **Terminal**: font / size / line-height / cursor / scrollback / symbol bar
+- **Connection**: reconnect delays
+- **Language**: 中文 / English
+
+---
+
+### CLI Tools
+
+#### rcc
+
+Unified management entry point:
 
 ```bash
-# 终端接入
-rcc-tui
-# 或
-rcc attach my-project
-
-# 同时在浏览器打开同一会话
-# 两端实时同步，双向输入
+rcc start         # Start service (daemon)
+rcc stop          # Stop service
+rcc restart       # Restart service
+rcc status        # Show service status
+rcc ls            # List all sessions
+rcc attach        # Attach to the only active session
+rcc attach <name> # Attach by name
+rcc log <name>    # tail -f session log
 ```
 
+**Detach**: `Ctrl+]` (does not kill the PTY)
+
+#### rcc-tui (Recommended)
+
+Local interactive TUI — no login required, connects directly via Unix Socket:
+
+```bash
+rcc-tui
+```
+
+Displays a large-text banner and session list on launch:
+
+```
+  ██████╗  ██████╗ ██████╗
+  ...
+  ● Service running  :8310
+
+  Conversation List
+  ─────────────────────────
+   › ● my-project  ~/project  3m ago
+     ＋  New conversation
+     ⏎  Resume history
+     ✕  Exit
+```
+
+**Keyboard**:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move cursor |
+| `Enter` | Confirm / enter |
+| `q` / `Esc` | Back to previous page |
+| `Ctrl+C` | Quit rcc-tui |
+| **`Ctrl+]`** | **Detach from session, back to menu** |
+
+---
+
+### URL Routes
+
+| URL | Description |
+|-----|-------------|
+| `/#/` | Home |
+| `/#/new` | New conversation |
+| `/#/session/:id` | Open specific session |
+| `/#/settings` | Settings |
+
+---
+
+## License / 许可证
+
+Apache 2.0 — see [LICENSE](../LICENSE)

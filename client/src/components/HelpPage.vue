@@ -27,11 +27,11 @@ import { marked } from 'marked';
 const emit = defineEmits(['close']);
 
 const docs = [
-  { name: 'usage.md',        label: '使用手册' },
-  { name: 'installation.md', label: '安装指南' },
-  { name: 'api.md',          label: 'API 文档' },
-  { name: 'architecture.md', label: '架构说明' },
-  { name: 'development.md',  label: '开发指南' },
+  { name: 'usage.md',        label: '使用手册 / Usage' },
+  { name: 'installation.md', label: '安装指南 / Installation' },
+  { name: 'api.md',          label: 'API 文档 / API' },
+  { name: 'architecture.md', label: '架构说明 / Architecture' },
+  { name: 'development.md',  label: '开发指南 / Development' },
 ];
 
 const current  = ref('usage.md');
