@@ -113,13 +113,23 @@ fi
 # ── Step 4: 服务配置 ──────────────────────────────────────────────────────────
 step "配置服务参数"
 
+echo -e "  ${GRAY}配置 Web 界面的登录账号和监听端口。"
+echo -e "  安装完成后通过浏览器访问 http://<IP>:<端口> 并用此账号登录。${R}\n"
+
+echo -e "  ${GRAY}管理员用户名：登录 Web 界面使用，直接回车使用默认值 [admin]${R}"
 RC_USER=$(input "admin" "管理员用户名")
-echo -n "  密码（不显示）: "; read -rs RC_PASS; echo ""
+
+echo -e "\n  ${GRAY}管理员密码：登录 Web 界面使用，不能为空${R}"
+echo -n "  密码（输入不显示）: "; read -rs RC_PASS; echo ""
 [[ -z "$RC_PASS" ]] && err "密码不能为空"
 [[ "$RC_PASS" == "changeme" ]] && warn "建议使用更安全的密码"
+
+echo -e "\n  ${GRAY}监听端口：Web 界面和 WebSocket 的服务端口，直接回车使用默认值 [8310]${R}"
 PORT=$(input "8310" "监听端口")
 [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "端口号无效: $PORT"
-ok "配置完成：$RC_USER @ :$PORT"
+
+echo ""
+ok "配置完成：用户名 ${RC_USER}，端口 ${PORT}"
 
 # ── Step 5: 更新 Claude 路径到 pty-manager ───────────────────────────────────
 step "写入配置"
