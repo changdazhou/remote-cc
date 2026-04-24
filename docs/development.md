@@ -55,7 +55,7 @@ remote-cc/
 │           ├── LogViewer.vue        # 日志查看
 │           └── HelpPage.vue         # 内嵌文档阅读
 ├── docs/               # 双语文档
-├── rcc                 # 统一 CLI 入口
+├── remotecc            # 统一 CLI 入口
 ├── rcc-tui             # 交互式 TUI
 ├── rcc-server          # 守护进程管理（bash）
 └── install.sh          # 一键部署脚本
@@ -139,7 +139,7 @@ remote-cc/
 │           ├── LogViewer.vue        # Log viewer
 │           └── HelpPage.vue         # Embedded docs reader
 ├── docs/               # Bilingual documentation
-├── rcc                 # Unified CLI entry
+├── remotecc            # Unified CLI entry
 ├── rcc-tui             # Interactive TUI
 ├── rcc-server          # Daemon manager (bash)
 └── install.sh          # One-click deploy script

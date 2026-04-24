@@ -58,7 +58,7 @@ cd ../client && npm install && npm run build
 #### 4. 安装命令行工具
 
 ```bash
-ln -sf $(pwd)/rcc        /usr/local/bin/rcc
+ln -sf $(pwd)/remotecc   /usr/local/bin/remotecc
 ln -sf $(pwd)/rcc-tui    /usr/local/bin/rcc-tui
 ln -sf $(pwd)/rcc-server /usr/local/bin/rcc-server
 ```
@@ -197,7 +197,7 @@ cd ../client && npm install && npm run build
 #### 4. Install CLI Tools
 
 ```bash
-ln -sf $(pwd)/rcc        /usr/local/bin/rcc
+ln -sf $(pwd)/remotecc   /usr/local/bin/remotecc
 ln -sf $(pwd)/rcc-tui    /usr/local/bin/rcc-tui
 ln -sf $(pwd)/rcc-server /usr/local/bin/rcc-server
 ```

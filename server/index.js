@@ -11,7 +11,7 @@ const { handleMessage, closeWS, listSessions, readLog, registerWS, unregisterWS 
 
 const PORT = parseInt(process.env.PORT || 3000);
 
-// ── 单实例锁：同一机器只允许运行一个 rcc 服务 ─────────────────────────────────
+// ── 单实例锁：同一机器只允许运行一个 remotecc 服务 ─────────────────────────────────
 const RCC_DIR  = path.join(os.homedir(), '.rcc');
 const LOCK_FILE = path.join(RCC_DIR, 'server.lock');
 fs.mkdirSync(RCC_DIR, { recursive: true });

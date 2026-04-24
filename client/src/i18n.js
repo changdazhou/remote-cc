@@ -97,7 +97,7 @@ const messages = {
     style_glass:    '毛玻璃',
     style_glass_desc: '半透明模糊层次',
 
-    // rcc 工具
+    // remotecc 工具
     rcc_attach_hint: '分离: 关闭终端或 Ctrl+C（不会终止会话）',
     rcc_detached:    '已分离',
     rcc_tailing:     '追踪日志',

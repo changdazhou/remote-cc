@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * rcc - RemoteCC 本地终端连接工具（跨平台）
+ * remotecc - RemoteCC 本地终端连接工具（跨平台）
  *
  * 用法:
- *   rcc ls                        列出所有 session
- *   rcc attach <sessionId|name>   连接到指定 session（双向同步）
- *   rcc attach                    如果只有一个活跃 session，直接连接
- *   rcc log <sessionId|name>      tail -f session 的 log 文件
+ *   remotecc ls                        列出所有 session
+ *   remotecc attach <sessionId|name>   连接到指定 session（双向同步）
+ *   remotecc attach                    如果只有一个活跃 session，直接连接
+ *   remotecc log <sessionId|name>      tail -f session 的 log 文件
  *
  * 平台支持：Linux / macOS（Unix socket）/ Windows（Named pipe）
  */
@@ -61,8 +61,8 @@ function listSessions() {
     console.log(`      log:  ${s.logPath || '-'}`);
     console.log();
   }
-  console.log(`  Attach:  rcc attach <name|id>`);
-  console.log(`  Log:     rcc log <name|id>\n`);
+  console.log(`  Attach:  remotecc attach <name|id>`);
+  console.log(`  Log:     remotecc log <name|id>\n`);
 }
 
 function formatAge(ms) {
@@ -85,21 +85,21 @@ function attachCmd(idOrName) {
       process.exit(1);
     } else {
       console.error('Multiple alive sessions. Specify name or id:\n');
-      for (const s of alive) console.error(`  rcc attach ${s.name}  (${s.sessionId.slice(0, 8)})`);
+      for (const s of alive) console.error(`  remotecc attach ${s.name}  (${s.sessionId.slice(0, 8)})`);
       process.exit(1);
     }
   } else {
     session = findSession(idOrName);
     if (!session) { console.error(`Session not found: ${idOrName}`); process.exit(1); }
     if (!session.alive) {
-      console.error(`Session "${session.name}" is dead. Use 'rcc log' to view output.`);
+      console.error(`Session "${session.name}" is dead. Use 'remotecc log' to view output.`);
       process.exit(1);
     }
   }
 
   const sockPath = getSocketPath(session);
   if (!IS_WIN && !fs.existsSync(sockPath)) {
-    console.error(`Socket not found: ${sockPath}\nMake sure the rcc server is running.`);
+    console.error(`Socket not found: ${sockPath}\nMake sure the remotecc server is running.`);
     process.exit(1);
   }
 
@@ -192,7 +192,7 @@ switch (cmd) {
     break;
   case 'log':
   case 'l':
-    if (!arg) { console.error('Usage: rcc log <name|id>'); process.exit(1); }
+    if (!arg) { console.error('Usage: remotecc log <name|id>'); process.exit(1); }
     logCmd(arg);
     break;
   case 'start':
@@ -242,12 +242,12 @@ switch (cmd) {
     try {
       execSync(path.join(dir, 'rcc-server') + ' status', { stdio: 'pipe' });
       console.log(`\n  ${C.gray}服务正在运行，执行以下命令重启：${C.reset}`);
-      console.log(`  rcc restart\n`);
+      console.log(`  remotecc restart\n`);
     } catch (_) {}
     break;
   }
   default:
     console.error(`Unknown command: ${cmd}`);
-    console.error('Usage: rcc [ls | attach [name|id] | log <name|id> | start | stop | restart | status | update]');
+    console.error('Usage: remotecc [ls | attach [name|id] | log <name|id> | start | stop | restart | status | update]');
     process.exit(1);
 }

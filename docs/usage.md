@@ -67,7 +67,7 @@ Claude Code PTY（持续运行）
 
 ### 命令行工具
 
-#### rcc
+#### remotecc
 
 统一管理入口：
 
@@ -193,7 +193,7 @@ Open `http://<server>:8310` in a browser and log in.
 
 ### CLI Tools
 
-#### rcc
+#### remotecc
 
 Unified management entry point:
 
