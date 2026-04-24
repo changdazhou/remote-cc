@@ -207,8 +207,47 @@ switch (cmd) {
       );
     } catch (e) { process.exit(e.status || 1); }
     break;
+  case 'update': {
+    const { execSync } = require('child_process');
+    const dir = __dirname;
+    const C = { reset:'\x1b[0m', cyan:'\x1b[36m', green:'\x1b[32m', red:'\x1b[31m', gray:'\x1b[90m' };
+    const ok  = (s) => console.log(`  ${C.green}✓${C.reset} ${s}`);
+    const err = (s) => { console.error(`  ${C.red}✗${C.reset} ${s}`); process.exit(1); };
+    const run = (cmd, opts) => execSync(cmd, { cwd: dir, stdio: 'inherit', ...opts });
+
+    console.log(`\n  ${C.cyan}RemoteCC 更新${C.reset}\n`);
+
+    // 1. git pull
+    try { run('git pull --rebase origin main'); ok('代码已更新'); }
+    catch (_) { err('git pull 失败，请检查网络或手动执行: git pull --rebase origin main'); }
+
+    // 2. 服务端依赖
+    process.stdout.write('  安装服务端依赖...');
+    try {
+      execSync('npm install --loglevel=error', { cwd: path.join(dir, 'server'), stdio: 'pipe' });
+      console.log(' ✓');
+    } catch (e) { console.log(''); err('npm install (server) 失败: ' + e.message); }
+
+    // 3. 前端依赖 + 构建
+    process.stdout.write('  构建前端...');
+    try {
+      execSync('npm install --loglevel=error', { cwd: path.join(dir, 'client'), stdio: 'pipe' });
+      execSync('npm run build', { cwd: path.join(dir, 'client'), stdio: 'pipe' });
+      console.log(' ✓');
+    } catch (e) { console.log(''); err('前端构建失败: ' + e.message); }
+
+    ok('更新完成');
+
+    // 4. 如果服务在运行，提示重启
+    try {
+      execSync(path.join(dir, 'rcc-server') + ' status', { stdio: 'pipe' });
+      console.log(`\n  ${C.gray}服务正在运行，执行以下命令重启：${C.reset}`);
+      console.log(`  rcc restart\n`);
+    } catch (_) {}
+    break;
+  }
   default:
     console.error(`Unknown command: ${cmd}`);
-    console.error('Usage: rcc [ls | attach [name|id] | log <name|id> | start | stop | restart | status]');
+    console.error('Usage: rcc [ls | attach [name|id] | log <name|id> | start | stop | restart | status | update]');
     process.exit(1);
 }
