@@ -7,9 +7,21 @@ RCC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$RCC_DIR/server"
 PID_FILE="/tmp/rcc-server.pid"
 LOG_FILE="/tmp/rcc.log"
+
+# 优先从 .env 加载配置
+if [[ -f "$RCC_DIR/.env" ]]; then
+  # 只导出非注释、非空行的 KEY=VALUE
+  set -a
+  # shellcheck disable=SC1090
+  source <(grep -E '^[A-Z_]+=.' "$RCC_DIR/.env")
+  set +a
+fi
+
 PORT="${PORT:-8310}"
 RC_USER="${RC_USER:-admin}"
 RC_PASS="${RC_PASS:-changeme}"
+CLAUDE_BIN="${CLAUDE_BIN:-}"
+IS_SANDBOX="${IS_SANDBOX:-}"
 
 # 自动检测 node 路径
 NODE="$(command -v node 2>/dev/null || echo node)"
@@ -31,8 +43,10 @@ do_start() {
   # Watchdog loop
   (
     while true; do
-      RC_USER="$RC_USER" RC_PASS="$RC_PASS" PORT="$PORT" \
-        "$NODE" "$SERVER_DIR/index.js" >> "$LOG_FILE" 2>&1
+      export RC_USER RC_PASS PORT
+      [[ -n "$CLAUDE_BIN"   ]] && export CLAUDE_BIN
+      [[ -n "$IS_SANDBOX"   ]] && export IS_SANDBOX
+      "$NODE" "$SERVER_DIR/index.js" >> "$LOG_FILE" 2>&1
       EXIT=$?
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] rcc-server exited (code $EXIT), restarting in 3s..." >> "$LOG_FILE"
       sleep 3
@@ -48,15 +62,18 @@ do_stop() {
   if ! is_running; then
     echo "rcc-server not running"
     rm -f "$PID_FILE"
-    return 0
+  else
+    PID=$(cat "$PID_FILE")
+    echo "Stopping rcc-server (pid $PID)..."
+    # Kill the watchdog and all its children
+    pkill -P "$PID" 2>/dev/null
+    kill "$PID" 2>/dev/null
+    rm -f "$PID_FILE"
+    echo "Stopped."
   fi
-  PID=$(cat "$PID_FILE")
-  echo "Stopping rcc-server (pid $PID)..."
-  # Kill the watchdog and all its children
-  pkill -P "$PID" 2>/dev/null
-  kill "$PID" 2>/dev/null
-  rm -f "$PID_FILE"
-  echo "Stopped."
+  # 兜底：清理所有残留的 node index.js 进程（包括 install.sh 直接启动的）
+  pkill -f "node.*index.js" 2>/dev/null || true
+  rm -f "$HOME/.rcc/local.token" "$HOME/.rcc/server.lock"
 }
 
 do_status() {
