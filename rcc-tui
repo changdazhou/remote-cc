@@ -233,6 +233,11 @@ function doAttach(sp, sname, onDetach) {
      A.gray + '  （Ctrl+] 断开回菜单，不终止会话）\n\n' + A.R);
 
   const sock = net.createConnection(sp);
+
+  // 清除 stdin 上所有残留的监听器（menu/input 函数可能留有 keypress/data 监听）
+  // 然后重新设置 rawMode，确保本地终端不回显输入
+  process.stdin.removeAllListeners('data');
+  process.stdin.removeAllListeners('keypress');
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
 

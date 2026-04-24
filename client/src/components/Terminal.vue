@@ -41,11 +41,58 @@ const termRef = ref(null);
 const wrapRef = ref(null);
 const pasteInputRef = ref(null);
 const ctxMenu = reactive({ show: false, x: 0, y: 0 });
-const currentLine = ref('');  // 当前输入行内容，传给 SymbolBar
+const currentLine = ref('');
 let awaitingPaste = false;
 
 let term, fitAddon, resizeObserver, resizeTimer;
 let lastW = 0, lastH = 0;
+
+// ── 自动锁底 + 上划暂停更新 ──────────────────────────────────────────────────
+let userScrolled = false;       // 用户是否主动上划
+let scrollResumeTimer = null;   // 停止滑动后恢复锁底的计时器
+const pendingWrites = [];        // 用户上划时缓存的输出
+const MAX_PENDING = 200;         // 最多缓存行数，防止内存无限增长
+
+// 检测用户是否滑到底部附近（20px 内认为在底部）
+function isNearBottom() {
+  if (!term) return true;
+  const vp = term.element?.querySelector('.xterm-viewport');
+  if (!vp) return true;
+  return vp.scrollHeight - vp.scrollTop - vp.clientHeight < 20;
+}
+
+function onViewportScroll() {
+  if (isNearBottom()) {
+    // 回到底部 → 恢复自动跟随，冲刷缓存
+    userScrolled = false;
+    clearTimeout(scrollResumeTimer);
+    flushPending();
+  } else {
+    // 上划 → 暂停自动更新
+    userScrolled = true;
+  }
+}
+
+function flushPending() {
+  if (pendingWrites.length === 0) return;
+  const batch = pendingWrites.splice(0);
+  batch.forEach(d => term?.write(d));
+  nextTick(() => term?.scrollToBottom());
+}
+
+// 对外暴露的 write：上划时缓存，否则直接写并锁底
+function smartWrite(data) {
+  if (userScrolled) {
+    if (pendingWrites.length < MAX_PENDING) pendingWrites.push(data);
+    // 超出上限时丢弃最老的，保留最新
+    else { pendingWrites.shift(); pendingWrites.push(data); }
+  } else {
+    term?.write(data);
+    // 锁底：写入后滚到最底
+    clearTimeout(scrollResumeTimer);
+    scrollResumeTimer = setTimeout(() => term?.scrollToBottom(), 16);
+  }
+}
 
 onMounted(() => {
   const td = THEMES[props.theme] || THEMES.cyber;
@@ -69,6 +116,20 @@ onMounted(() => {
   term.open(termRef.value);
 
   if (wrapRef.value) wrapRef.value.style.background = td.bg;
+
+  // 监听 viewport scroll 检测用户是否上划
+  // xterm 渲染后 viewport 元素才存在，用 MutationObserver 等它出现
+  const vpObserver = new MutationObserver(() => {
+    const vp = term.element?.querySelector('.xterm-viewport');
+    if (vp) {
+      vp.addEventListener('scroll', onViewportScroll, { passive: true });
+      vpObserver.disconnect();
+    }
+  });
+  vpObserver.observe(termRef.value, { childList: true, subtree: true });
+  // 如果已经存在直接绑定
+  const vp0 = termRef.value?.querySelector('.xterm-viewport');
+  if (vp0) vp0.addEventListener('scroll', onViewportScroll, { passive: true });
 
   term.onData(data => {
     emit('input', data);
@@ -140,9 +201,13 @@ onBeforeUnmount(() => {
   term?.dispose();
 });
 
-function write(data) { term?.write(data); }
+function write(data) { smartWrite(data); }
 function fit() { fitAddon?.fit(); }
-function scrollToBottom() { term?.scrollToBottom(); }
+function scrollToBottom() {
+  userScrolled = false;
+  flushPending();
+  term?.scrollToBottom();
+}
 
 // 供外部（SymbolBar 通过 App）同步更新行追踪，保持与键盘输入相同的逻辑
 function trackInput(data) {

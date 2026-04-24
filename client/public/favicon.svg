@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="1.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="32" height="32" rx="6" ry="6" fill="#0a0e14"/>
+  <rect width="32" height="32" rx="6" ry="6" fill="none" stroke="#00ffd520" stroke-width="1"/>
+  <!-- > 符号 -->
+  <polyline points="5,11 11,16 5,21"
+            fill="none" stroke="#00ffd5" stroke-width="2.4"
+            stroke-linecap="round" stroke-linejoin="round"
+            filter="url(#glow)"/>
+  <!-- _ 光标 -->
+  <line x1="14" y1="21" x2="27" y2="21"
+        stroke="#00ffd5" stroke-width="2.4" stroke-linecap="round"
+        filter="url(#glow)"/>
+</svg>
