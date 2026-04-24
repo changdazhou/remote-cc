@@ -180,7 +180,42 @@ function logCmd(idOrName) {
 // ── CLI entry ─────────────────────────────────────────────────────────────────
 const [,, cmd, arg] = process.argv;
 
+const C = { r:'\x1b[0m', b:'\x1b[1m', d:'\x1b[2m', c:'\x1b[36m', g:'\x1b[32m', y:'\x1b[33m', gray:'\x1b[90m' };
+
+function printHelp() {
+  console.log(`
+  ${C.b}${C.c}remotecc${C.r} — Remote Claude Code CLI
+
+  ${C.b}服务管理${C.r}
+    ${C.c}remotecc start${C.r}            启动服务（守护进程，崩溃自动重启）
+    ${C.c}remotecc stop${C.r}             停止服务
+    ${C.c}remotecc restart${C.r}          重启服务
+    ${C.c}remotecc status${C.r}           查看服务运行状态
+    ${C.c}remotecc update${C.r}           更新到最新版本（git pull + 重新构建）
+
+  ${C.b}会话管理${C.r}
+    ${C.c}remotecc ls${C.r}               列出所有会话
+    ${C.c}remotecc attach${C.r}           接入唯一活跃会话
+    ${C.c}remotecc attach <name|id>${C.r}  按名称或 ID 接入会话
+    ${C.c}remotecc log <name|id>${C.r}     实时查看会话日志（tail -f）
+
+  ${C.b}交互式界面${C.r}
+    ${C.c}rcc-tui${C.r}                   本地交互式 TUI（无需登录，推荐）
+
+  ${C.b}Web 界面${C.r}
+    启动服务后浏览器访问 ${C.c}http://<IP>:<PORT>${C.r}
+
+  ${C.b}断开会话${C.r}
+    在会话内按 ${C.b}Ctrl+]${C.r} 断开回菜单，不终止 Claude 进程
+  `);
+}
+
 switch (cmd) {
+  case '-h':
+  case '--help':
+  case 'help':
+    printHelp();
+    break;
   case 'ls':
   case 'list':
   case undefined:
