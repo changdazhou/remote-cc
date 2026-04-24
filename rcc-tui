@@ -237,39 +237,47 @@ function doAttach(sp, sname, onDetach) {
   process.stdin.resume();
 
   const sendResize = () => {
-    try { sock.write(`\x00RESIZE:${process.stdout.columns||80}:${process.stdout.rows||24}\n`); } catch (_) {}
+    const cols = process.stdout.columns || 80;
+    const rows = process.stdout.rows    || 24;
+    try { sock.write(`\x00RESIZE:${cols}:${rows}\n`); } catch (_) {}
   };
 
   // 拦截 stdin，过滤 Ctrl+]
   const onStdinData = (chunk) => {
-    // chunk 可能含多字节，逐字节检查
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    let i = 0;
-    while (i < bytes.length) {
-      if (bytes[i] === 0x1d) {
-        // Ctrl+] — 断开
-        detach();
-        return;
-      }
-      i++;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0x1d) { detach(); return; }
     }
     try { sock.write(bytes); } catch (_) {}
   };
 
+  // 输出过滤：把 ?2026h/l（Synchronized Output）转成本地终端能识别的形式
+  // 同时过滤 ?2026 不支持时的残留控制序列避免乱码
+  let outBuf = Buffer.alloc(0);
+  const onSockData = (chunk) => {
+    // 直接输出，终端原生支持 ?2026 就正常渲染，不支持也只是多余的转义序列
+    process.stdout.write(chunk);
+  };
+
   sock.on('connect', () => {
+    // 连接后立即同步本地终端尺寸，让 Claude 按正确宽度渲染
     sendResize();
+    // 再发一次，确保 Claude TUI 完全初始化后也能收到
+    setTimeout(sendResize, 300);
     process.stdout.on('resize', sendResize);
-    // 不用 pipe，改用手动 data 事件以便拦截逃逸键
     process.stdin.on('data', onStdinData);
-    sock.pipe(process.stdout);
+    sock.on('data', onSockData);
   });
 
   const detach = () => {
     process.stdin.removeListener('data', onStdinData);
-    try { sock.unpipe(process.stdout); sock.destroy(); } catch (_) {}
+    sock.removeListener('data', onSockData);
+    try { sock.destroy(); } catch (_) {}
     process.stdout.removeListener('resize', sendResize);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.resume();
+    // 重置终端状态，清除 Claude 可能留下的 alternate screen 等
+    process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
     wr('\r\n' + A.cyan + '[已断开 — 按任意键返回菜单]' + A.R + '\n');
     setTimeout(onDetach, 600);
   };
