@@ -573,22 +573,9 @@ async function pageHistorySessions(info, project) {
 
   const sess = items[idx]._data;
   const sessCwd = sess.cwd || '~';
-
-  // 确认并自定义名称
-  wr(A.clear + A.show);
-  wr('\n' + ctr(A.b + '恢复对话' + A.R) + '\n\n' + hr() + '\n\n');
-  wr(A.gray + '  预览: ' + (sess.lastMessage || '(无)') + '\n');
-  wr('  目录: ' + sessCwd + '\n');
-  wr('  消息: ' + sess.messageCount + ' 条\n');
-  wr('  工作目录留空则返回\n\n' + A.R);
-
-  const workingDir = await input('工作目录', sessCwd);
-  if (!workingDir.trim()) return pageHistorySessions(info, project);
-
-  const base = path.basename(workingDir.trim()) || 'session';
-  const name = await input('会话名称（留空用目录名）', base);
-
-  await doCreate(info, workingDir.trim(), (name.trim() || base), sess.sessionId);
+  const base = path.basename(sessCwd) || 'session';
+  // 直接用历史会话的目录和名称，不再询问
+  await doCreate(info, sessCwd, base, sess.sessionId);
 }
 
 // ── 创建会话通用逻辑 ──────────────────────────────────────────────────────────
@@ -600,20 +587,45 @@ async function doCreate(info, workingDir, name, resumeSessionId) {
 
   wr('\n' + A.gray + '  正在创建会话...' + A.R);
 
-  // token 由服务启动时生成，若不存在则等待最多 5s（服务刚启动的时间差）
+  // token 由服务启动时生成，若不存在说明服务未运行
   let tok = localToken();
   if (!tok) {
-    for (let i = 0; i < 10; i++) {
-      await sl(500);
-      tok = localToken();
-      if (tok) break;
-    }
+    // 等最多 3s（服务刚启动的时间差）
+    for (let i = 0; i < 6; i++) { await sl(500); tok = localToken(); if (tok) break; }
   }
   if (!tok) {
-    wr(A.up(1) + A.erase + A.red +
-      '  ✗ 未找到本地 token（~/.rcc/local.token）\n' +
-      A.gray + '  请先启动服务：remotecc start\n' + A.R);
-    await sl(3000); return pageMain();
+    wr(A.up(1) + A.erase + '\n');
+    wr(A.red + '  ✗ 服务未运行，无法创建会话\n' + A.R);
+    wr(A.gray + '  请先执行：remotecc start\n\n' + A.R);
+
+    // 提供一键启动
+    const lock = serverInfo();
+    if (!lock) {
+      const items = [
+        { label: A.cyan + '▶  立即启动服务' + A.R, _type: 'start' },
+        { label: A.gray + '←  返回菜单' + A.R,   _type: 'back' },
+      ];
+      const idx = await menu('服务未运行', items);
+      if (idx !== null && items[idx]?._type === 'start') {
+        const { execFileSync } = require('child_process');
+        // 找 remotecc：同目录 → PATH
+        const remoteccBin = (() => {
+          const local = path.join(path.dirname(process.argv[1] || ''), 'remotecc');
+          try { require('fs').accessSync(local); return local; } catch (_) {}
+          return 'remotecc';
+        })();
+        try { execFileSync(remoteccBin, ['start'], { stdio: 'ignore' }); } catch (_) {}
+        // 等服务和 token 就绪
+        wr(A.show + A.gray + '\n  正在启动服务...' + A.R);
+        for (let i = 0; i < 20; i++) { await sl(500); tok = localToken(); if (tok) break; }
+        if (tok) { wr(A.up(1) + A.erase + A.green + '  ✓ 服务已启动\n' + A.R); await sl(400); }
+        else { await notice('启动超时，请手动执行 remotecc start', A.red, 2500); return pageMain(); }
+      } else {
+        return pageMain();
+      }
+    } else {
+      await sl(2500); return pageMain();
+    }
   }
 
   try {
