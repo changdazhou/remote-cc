@@ -403,7 +403,7 @@ function startSession({ workingDir, name, resumeSessionId }) {
   // Deduplicate pending sessions
   for (const entry of termList) {
     if (entry.attachSessionId === '' &&
-        entry.workingDir === (workingDir || '/paddle') &&
+        entry.workingDir === workingDir &&
         (entry.resumeSessionId || '') === (resumeSessionId || '')) {
       activeSessionId.value = entry.sid;
       view.value = 'terminal';
@@ -417,8 +417,8 @@ function startSession({ workingDir, name, resumeSessionId }) {
     ws: null,
     alive: true,
     wsStarted: false,
-    name: name || ((workingDir || '/paddle').split('/').pop() || 'root'),
-    workingDir: workingDir || '/paddle',
+    name: name || ((workingDir || '~').split('/').pop() || 'root'),
+    workingDir: workingDir || '~',
     resumeSessionId: resumeSessionId || '',
     attachSessionId: '',
     _destroy: null,

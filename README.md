@@ -1,10 +1,6 @@
-# RemoteCC
+# RemoteCC — 躺平使用 Claude Code
 
-[中文](#中文) | [English](#english)
-
----
-
-## 中文
+[English](README.en.md) | 中文
 
 ```
   ██████╗  ██████╗ ██████╗
@@ -13,128 +9,61 @@
   ██╔══██╗██║     ██║
   ██║  ██║╚██████╗╚██████╗
   ╚═╝  ╚═╝ ╚═════╝ ╚═════╝
-  Remote Claude Code — 多端协同终端工具
+  Remote Claude Code
 ```
 
-### 为什么需要 RemoteCC？
-
-Claude Code 是运行在本地终端的 AI 编程助手。当你离开电脑、切换到平板/手机、或需要团队协作时，会话就中断了——所有上下文丢失，工作流被打断。
-
-**RemoteCC 解决的是"Claude Code 不能多端访问"这个痛点。**
-
-### 核心架构：一个 PTY，多个观察者
-
-```
-                        ┌─────────────────────────────┐
-                        │      PTY Process (claude)    │
-                        └──────────────┬───────────────┘
-                                       │ stdout/stdin
-                            ┌──────────▼──────────┐
-                            │    PTY Manager       │
-                            │  500KB scrollback    │
-                            │  disk log (9000行)   │
-                            └──┬──────┬──────┬─────┘
-                               │      │      │
-              ┌────────────────▼┐   ┌─▼──┐  ┌▼──────────────────┐
-              │  浏览器 WebSocket│   │... │  │ 本地终端 Unix Socket│
-              │  (手机/平板/PC)  │   │    │  │ rcc / rcc-tui      │
-              └─────────────────┘   └────┘  └────────────────────┘
-```
-
-同一 PTY 进程，所有端看到完全相同的内容，任意端输入所有端实时可见。浏览器关闭后 PTY 继续运行，下次打开自动恢复。
-
-### 多端协同场景
-
-| 场景 | 解决方案 |
-|------|----------|
-| 手机查看 Claude 输出 | 浏览器打开 `http://server:8310` |
-| 离开电脑，手机继续工作 | 手机浏览器接入，完整键盘操作 |
-| 后台长任务不中断 | PTY 持久运行，随时查看进度 |
-| SSH 断线不丢失 | 会话独立于 SSH，重连即恢复 |
-
-### 快速安装
-
-```bash
-git clone https://github.com/changdazhou/remote-cc.git
-cd remote-cc
-bash install.sh
-```
-
-### 命令参考
-
-```bash
-rcc start         # 启动服务
-rcc stop          # 停止服务
-rcc status        # 服务状态
-rcc ls            # 查看会话列表
-rcc-tui           # 交互式终端 UI（推荐）
-```
-
-> 在会话内用 **`Ctrl+]`** 断开回菜单，不终止 PTY 进程。
-
-### 详细文档
-
-- [安装指南 / Installation](docs/installation.md)
-- [使用手册 / Usage](docs/usage.md)
-- [API 文档 / API Reference](docs/api.md)
-- [架构说明 / Architecture](docs/architecture.md)
-- [开发指南 / Development](docs/development.md)
-
-### 许可证
-
-本项目基于 [Apache 2.0 许可证](LICENSE) 发布。
+> **本工具由 Claude Code 辅助生成，目前仍在打磨迭代中。欢迎提交 [Issue](https://github.com/changdazhou/remote-cc/issues) 反馈 BUG 和建议。**
 
 ---
 
-## English
+## 这是什么？
+
+**把 Claude Code 从本地终端解放出来，躺在床上用手机也能和它对话。**
+
+Claude Code 是跑在终端里的 AI 编程助手，功能强大，但只能在本机用。RemoteCC 打通了这个限制——你的 Claude Code 会话可以同时从手机浏览器、平板、电脑终端访问，**所有端实时同步，真正共享同一个 PTY 进程**。
+
+不是截图，不是日志，是**完全实时的双向同步**——你在手机上输入，电脑上看得到；你在终端里执行，手机上同步显示。任意断开任意端，Claude 在后台继续工作，随时重连、无缝恢复。
+
+---
+
+## 核心特性
+
+- **真实终端** — PTY + xterm.js，颜色/交互/鼠标全支持
+- **实时多端同步** — 同一 PTY 进程广播给所有连接端，零延迟
+- **持久会话** — 类 tmux 架构，关闭浏览器/断开 SSH 不中断
+- **历史恢复** — 读取 `~/.claude/projects/`，随时 `--resume` 继续上次对话
+- **本地 TUI** — `rcc-tui` 交互式终端界面，无需浏览器，无需登录
+- **多端断开快捷键** — `Ctrl+]` 随时从任意端脱离，PTY 不受影响
+- **移动端优化** — 响应式 UI，CC/SH 双模式快捷键栏
+- **丰富主题** — 9 套颜色主题 + 3 种 UI 风格
+
+---
+
+## 多端实时同步原理
 
 ```
-  ██████╗  ██████╗ ██████╗
-  ██╔══██╗██╔════╝██╔════╝
-  ██████╔╝██║     ██║
-  ██╔══██╗██║     ██║
-  ██║  ██║╚██████╗╚██████╗
-  ╚═╝  ╚═╝ ╚═════╝ ╚═════╝
-  Remote Claude Code — Multi-client collaborative terminal
+                     你打开了三个窗口
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+    手机浏览器          电脑浏览器         本地终端
+    (WebSocket)       (WebSocket)      (Unix Socket)
+          │                 │                 │
+          └────────┬────────┘                 │
+                   ▼                          │
+             PTY Manager  ◀────────────────────┘
+                   │
+                   ▼
+          claude 进程（一直跑）
 ```
 
-### Why RemoteCC?
+**任意端输入 → PTY stdin → 所有端同步看到输出**
 
-Claude Code is an AI coding assistant that runs in your local terminal. When you leave your computer, switch to a tablet/phone, or need team collaboration, the session breaks — all context is lost and your workflow is interrupted.
+这不是镜像或转发，而是多个订阅者共享同一个 PTY master fd。哪怕你把所有客户端都断开，claude 还在后台继续执行任务。
 
-**RemoteCC solves the problem of "Claude Code can't be accessed from multiple devices."**
+---
 
-### Core Architecture: One PTY, Multiple Observers
-
-```
-                        ┌─────────────────────────────┐
-                        │      PTY Process (claude)    │
-                        └──────────────┬───────────────┘
-                                       │ stdout/stdin
-                            ┌──────────▼──────────┐
-                            │    PTY Manager       │
-                            │  500KB scrollback    │
-                            │  disk log (9000 ln)  │
-                            └──┬──────┬──────┬─────┘
-                               │      │      │
-              ┌────────────────▼┐   ┌─▼──┐  ┌▼──────────────────┐
-              │  Browser WS      │   │... │  │ Local Unix Socket  │
-              │  (phone/PC/iPad) │   │    │  │ rcc / rcc-tui      │
-              └─────────────────┘   └────┘  └────────────────────┘
-```
-
-All clients share the same PTY process — input from any client is visible to all, in real time. The PTY keeps running after the browser closes and resumes automatically on reconnect.
-
-### Use Cases
-
-| Scenario | Solution |
-|----------|----------|
-| Check Claude output on phone | Open `http://server:8310` in browser |
-| Continue work away from desk | Full keyboard interaction on mobile |
-| Long-running background tasks | PTY persists, check progress anytime |
-| SSH disconnection safety | Sessions survive SSH drops |
-
-### Quick Install
+## 快速开始
 
 ```bash
 git clone https://github.com/changdazhou/remote-cc.git
@@ -142,26 +71,64 @@ cd remote-cc
 bash install.sh
 ```
 
-### Command Reference
+安装脚本全程交互，自动检测环境，无需手动配置。
+
+安装完成后：
 
 ```bash
-rcc start         # Start service
-rcc stop          # Stop service
-rcc status        # Service status
-rcc ls            # List sessions
-rcc-tui           # Interactive TUI (recommended)
+rcc start          # 启动服务
 ```
 
-> Press **`Ctrl+]`** inside a session to detach back to the menu without killing the PTY.
+浏览器打开 `http://<IP>:8310`，或直接用终端：
 
-### Documentation
+```bash
+rcc-tui            # 本地交互式界面（推荐）
+```
 
-- [Installation Guide](docs/installation.md)
-- [Usage Manual](docs/usage.md)
-- [API Reference](docs/api.md)
-- [Architecture](docs/architecture.md)
-- [Development Guide](docs/development.md)
+---
 
-### License
+## 常用命令
 
-This project is released under the [Apache 2.0 License](LICENSE).
+```bash
+rcc start          # 启动服务（守护进程，崩溃自动重启）
+rcc stop           # 停止服务
+rcc status         # 查看服务状态
+rcc ls             # 查看所有会话
+rcc-tui            # 交互式 TUI（无需登录，本地直连）
+```
+
+在任意会话内：**`Ctrl+]`** 断开回菜单，不终止 Claude 进程。
+
+---
+
+## 截图
+
+> Web 终端 · 会话管理 · rcc-tui · 移动端
+
+（欢迎贡献截图 🙏）
+
+---
+
+## 文档
+
+- [安装指南](docs/installation.md)
+- [使用手册](docs/usage.md)
+- [API 文档](docs/api.md)
+- [架构说明](docs/architecture.md)
+- [开发指南](docs/development.md)
+
+---
+
+## 参与贡献
+
+这个工具还很年轻，欢迎：
+
+- 🐛 [提交 BUG](https://github.com/changdazhou/remote-cc/issues/new?labels=bug)
+- 💡 [提功能建议](https://github.com/changdazhou/remote-cc/issues/new?labels=enhancement)
+- 🔧 提交 PR
+
+---
+
+## 许可证
+
+[Apache 2.0](LICENSE) © 2024 changdazhou

@@ -3,7 +3,7 @@
 # 用法: rcc-server [start|stop|restart|status|log]
 # 进程退出后自动重启
 
-RCC_DIR="/paddle/project/local_tools/remote_cc"
+RCC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_DIR="$RCC_DIR/server"
 PID_FILE="/tmp/rcc-server.pid"
 LOG_FILE="/tmp/rcc.log"
@@ -11,8 +11,8 @@ PORT="${PORT:-8310}"
 RC_USER="${RC_USER:-admin}"
 RC_PASS="${RC_PASS:-changeme}"
 
-# 使用正确的 node
-NODE="/root/.nvm/versions/node/v24.13.0/bin/node"
+# 自动检测 node 路径
+NODE="$(command -v node 2>/dev/null || echo node)"
 
 cmd="${1:-start}"
 

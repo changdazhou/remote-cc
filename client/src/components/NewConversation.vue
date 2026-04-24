@@ -13,7 +13,7 @@
         <input
           v-model="workingDir"
           class="nc-input"
-          placeholder="/paddle"
+          placeholder="~/"
           spellcheck="false" autocorrect="off" autocapitalize="off"
           @keyup.enter="start"
         />
@@ -110,9 +110,9 @@ const emit = defineEmits(['start', 'cancel']);
 const tab = ref('new');
 
 // ── New conversation ───────────────────────────────────────────────────────────
-const workingDir  = ref('/paddle');
+const workingDir  = ref('~');
 const sessionName = ref('');
-const quickPicks  = ['/paddle', '/root', '/tmp'];
+const quickPicks  = ['~', '/tmp'];
 
 const namePlaceholder = computed(() => {
   const base = workingDir.value.split('/').filter(Boolean).pop() || 'root';
@@ -126,7 +126,7 @@ function shortPath(p) {
 }
 
 function start() {
-  const dir  = workingDir.value.trim() || '/paddle';
+  const dir  = workingDir.value.trim() || '~';
   const base = dir.split('/').filter(Boolean).pop() || 'root';
   const name = sessionName.value.trim() || base;
   emit('start', { workingDir: dir, name });
@@ -187,7 +187,7 @@ function selectSess(sess, proj) {
 function startResume() {
   const sess = selectedSess.value;
   if (!sess) return;
-  const dir  = sess.cwd || '/paddle';
+  const dir  = sess.cwd || '~';
   const base = shortBase(dir);
   const name = resumeName.value.trim() || base;
   emit('start', { workingDir: dir, name, resumeSessionId: sess.sessionId });

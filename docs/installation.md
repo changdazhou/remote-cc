@@ -91,7 +91,7 @@ Environment=RC_USER=admin
 Environment=RC_PASS=yourpassword
 Environment=PORT=8310
 Environment=IS_SANDBOX=1
-ExecStart=/root/.nvm/versions/node/v24.13.0/bin/node index.js
+ExecStart=/usr/bin/env node index.js
 Restart=always
 RestartSec=3
 
@@ -230,7 +230,7 @@ Environment=RC_USER=admin
 Environment=RC_PASS=yourpassword
 Environment=PORT=8310
 Environment=IS_SANDBOX=1
-ExecStart=/root/.nvm/versions/node/v24.13.0/bin/node index.js
+ExecStart=/usr/bin/env node index.js
 Restart=always
 RestartSec=3
 

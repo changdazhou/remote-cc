@@ -227,7 +227,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80,
   }
 
   const cwd = (workingDir && workingDir.trim()) ? workingDir.trim()
-    : (IS_WIN ? process.env.USERPROFILE || 'C:\\' : '/paddle');
+    : (IS_WIN ? process.env.USERPROFILE || 'C:\\' : process.env.HOME || '/tmp');
 
   // 全局防重复：同 cwd + resumeSessionId 已有活跃 session → 直接 attach
   for (const [existingId, s] of sessions) {
