@@ -206,8 +206,13 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId) {
         try {
           const msg = JSON.parse(text);
           if (msg.type === 'session_list') {
-            const payload = { type: 'start', workingDir, name,
-              cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 };
+            const payload = {
+              type: 'start', workingDir, name,
+              cols: process.stdout.columns || 80,
+              rows: process.stdout.rows    || 24,
+              // 透传当前 shell 的全部环境变量，确保用户的 PATH/conda/pyenv 等生效
+              env: process.env,
+            };
             if (resumeSessionId) payload.resumeSessionId = resumeSessionId;
             sock.write(wsMask(JSON.stringify(payload)));
           } else if (msg.type === 'session_id') {

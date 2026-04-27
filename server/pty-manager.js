@@ -223,7 +223,7 @@ function startSocketServer(sessionId) {
 
 // ── Create session ────────────────────────────────────────────────────────────
 
-function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80, rows = 24 }) {
+function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80, rows = 24, env: clientEnv = {} }) {
   // 防重复：同一个 wsId 已有 session，直接复用
   if (wsToSession.has(wsId)) {
     const existing = wsToSession.get(wsId);
@@ -277,12 +277,13 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80,
     ? {
         useConpty: true,
         cols, rows, cwd,
-        env: { ...process.env, CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL: '1' },
+        env: { ...process.env, ...clientEnv, CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL: '1' },
       }
     : {
         name: 'xterm-256color', cols, rows, cwd,
         env: {
           ...process.env,
+          ...clientEnv,                          // 客户端环境变量（优先级高于服务端）
           TERM: 'xterm-256color',
           COLORTERM: 'truecolor',
           CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL: '1',
