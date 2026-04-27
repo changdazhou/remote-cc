@@ -338,6 +338,17 @@ function connectEntryWS(entry) {
           entry.alive = false;
           const el = termRefs[entry.sid];
           if (el) el.write(`\r\n\x1b[33m[${t.value.exited} ${msg.exitCode}]\x1b[0m\r\n`);
+          // CC 退出后自动清理会话，延迟 1.5s 让用户看到退出消息
+          setTimeout(() => {
+            const sid = entry.sid;
+            entry._destroy?.();
+            const idx = termList.findIndex(e => e.sid === sid);
+            if (idx !== -1) { delete termRefs[sid]; termList.splice(idx, 1); }
+            if (activeSessionId.value === sid) {
+              activeSessionId.value = '';
+              view.value = 'home';
+            }
+          }, 1500);
           return;
         }
         case 'error': {

@@ -233,7 +233,7 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId) {
 // 在 socket 层拦截，不传给 PTY，触发断开回菜单
 const ESCAPE_KEY = '\x1d';
 
-function doAttach(sp, sname, onDetach) {
+function doAttach(sp, sname, onDetach, sessionId) {
   wr(A.show + '\n' + A.cyan + '  已接入 ' + A.b + sname + A.R +
      A.gray + '  （Ctrl+] 断开回菜单，不终止会话）\n\n' + A.R);
 
@@ -261,11 +261,10 @@ function doAttach(sp, sname, onDetach) {
     try { sock.write(bytes); } catch (_) {}
   };
 
-  // 输出过滤：把 ?2026h/l（Synchronized Output）转成本地终端能识别的形式
-  // 同时过滤 ?2026 不支持时的残留控制序列避免乱码
-  let outBuf = Buffer.alloc(0);
+  // 标记是否是 CC 主动退出（通过 socket 关闭后检查 meta 判断）
+  let ccExited = false;
+
   const onSockData = (chunk) => {
-    // 直接输出，终端原生支持 ?2026 就正常渲染，不支持也只是多余的转义序列
     process.stdout.write(chunk);
   };
 
@@ -289,8 +288,16 @@ function doAttach(sp, sname, onDetach) {
     process.stdin.resume();
     // 重置终端状态，清除 Claude 可能留下的 alternate screen 等
     process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
-    wr('\r\n' + A.cyan + '[已断开 — 按任意键返回菜单]' + A.R + '\n');
-    setTimeout(onDetach, 600);
+    // 检查 meta：session 已 dead 说明 CC 正常退出，否则是断开
+    const meta = loadMeta().find(s => s.sessionId === sessionId);
+    const normalExit = meta && !meta.alive;
+    if (normalExit) {
+      wr('\r\n' + A.green + '[会话已结束]' + A.R + '\n');
+      setTimeout(onDetach, 800);
+    } else {
+      wr('\r\n' + A.cyan + '[已断开 — 按任意键返回菜单]' + A.R + '\n');
+      setTimeout(onDetach, 600);
+    }
   };
 
   // 服务掉线监测：每 3s 检查一次，服务消失则强制退出 TUI
@@ -506,10 +513,11 @@ async function pageSession(s) {
 
   const items = [
     ok
-      ? { label: A.green + '▶  接入会话' + A.R, hint: '与浏览器共享同一 PTY', _type: 'attach' }
+      ? { label: A.green + '▶  接入会话' + A.R, hint: 'Ctrl+] 断开，不终止会话', _type: 'attach' }
       : { label: A.gray  + '▶  接入会话（无 socket）' + A.R, _type: 'nosock', _disabled: !ok },
-    { label: A.blue  + '≡  查看日志' + A.R,   hint: 'tail -f 实时输出',   _type: 'log' },
-    { label: A.gray  + '←  返回列表' + A.R,                                _type: 'back' },
+    { label: A.blue  + '≡  查看日志' + A.R,                hint: 'tail -f 实时输出', _type: 'log' },
+    { label: A.red   + '⏹  关闭会话' + A.R,               hint: '终止 PTY 进程',    _type: 'kill' },
+    { label: A.gray  + '←  返回列表' + A.R,                                          _type: 'back' },
   ];
 
   const idx = await menu(
@@ -522,7 +530,7 @@ async function pageSession(s) {
 
   switch (items[idx]._type) {
     case 'attach':
-      doAttach(sp, s.name, pageMain);
+      doAttach(sp, s.name, pageMain, s.sessionId);
       break;
     case 'nosock':
       await notice('Socket 不可用，请确认服务运行中', A.red, 1800);
@@ -530,19 +538,70 @@ async function pageSession(s) {
     case 'log':
       await doTail(s);
       return pageMain();
+    case 'kill':
+      await doKillSession(s, info);
+      return pageMain();
   }
 }
 
 // ── 已结束会话 ────────────────────────────────────────────────────────────────
 async function pageDeadSession(s) {
   const items = [
-    { label: A.blue + '≡  查看历史日志' + A.R, _type: 'log' },
-    { label: A.gray + '←  返回列表' + A.R,     _type: 'back' },
+    { label: A.blue + '≡  查看历史日志' + A.R,  _type: 'log' },
+    { label: A.red  + '✕  删除会话记录' + A.R,   _type: 'delete' },
+    { label: A.gray + '←  返回列表' + A.R,        _type: 'back' },
   ];
   const idx = await menu('已结束: ' + A.d + s.name + A.R, items);
   if (idx === null || items[idx]?._type === 'back') return pageMain();
   if (items[idx]._type === 'log') await doTail(s, false);
+  if (items[idx]._type === 'delete') await doDeleteSession(s, info);
   return pageMain();
+}
+
+// ── Kill / Delete 会话（通过 WS 发控制消息）──────────────────────────────────
+function sendControlMsg(info, msg) {
+  return new Promise(resolve => {
+    const tok = localToken();
+    if (!tok || !info) { resolve(false); return; }
+    const sock = net.createConnection(info.port, 'localhost');
+    const key  = require('crypto').randomBytes(16).toString('base64');
+    let upgraded = false, done = false;
+    const timer = setTimeout(() => { sock.destroy(); resolve(false); }, 5000);
+
+    sock.on('connect', () => {
+      sock.write(
+        `GET /ws?token=${encodeURIComponent(tok)} HTTP/1.1\r\n` +
+        `Host: localhost:${info.port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+        `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+      );
+    });
+    sock.on('data', chunk => {
+      if (!upgraded) {
+        const s = chunk.toString('binary');
+        if (!s.includes('101')) { sock.destroy(); resolve(false); return; }
+        upgraded = true;
+        sock.write(wsMask(JSON.stringify(msg)));
+        setTimeout(() => { if (!done) { done = true; clearTimeout(timer); sock.destroy(); resolve(true); } }, 500);
+      }
+    });
+    sock.on('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
+async function doKillSession(s, info) {
+  wr('\n' + A.gray + '  正在关闭会话...' + A.R);
+  const ok = await sendControlMsg(info, { type: 'kill', sessionId: s.sessionId });
+  wr(A.up(1) + A.erase);
+  if (ok) await notice('会话已关闭', A.green, 800);
+  else    await notice('关闭失败，请确认服务运行中', A.red, 1500);
+}
+
+async function doDeleteSession(s, info) {
+  wr('\n' + A.gray + '  正在删除会话记录...' + A.R);
+  const ok = await sendControlMsg(info, { type: 'delete', sessionId: s.sessionId });
+  wr(A.up(1) + A.erase);
+  if (ok) await notice('已删除', A.green, 600);
+  else    await notice('删除失败', A.red, 1500);
 }
 
 // ── 新建对话 ──────────────────────────────────────────────────────────────────
