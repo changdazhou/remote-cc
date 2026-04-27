@@ -542,17 +542,10 @@ async function pageDeadSession(s) {
 
 // ── 新建对话 ──────────────────────────────────────────────────────────────────
 async function pageNew(info) {
-  wr(A.clear + A.show);
-  wr('\n' + ctr(A.b + '新建对话' + A.R) + '\n\n' + hr() + '\n\n');
-  wr(A.gray + '  工作目录留空则返回上一页\n\n' + A.R);
-
-  const workingDir = await input('工作目录', '');
-  if (!workingDir.trim()) return pageMain();
-
-  const base = path.basename(workingDir.trim()) || 'session';
-  const name = await input('会话名称（留空用目录名）', base);
-
-  await doCreate(info, workingDir.trim(), (name.trim() || base), '');
+  // 默认当前目录，和 claude 直接运行的逻辑一致
+  const workingDir = process.cwd();
+  const name = path.basename(workingDir) || 'session';
+  await doCreate(info, workingDir, name, '');
 }
 
 // ── 恢复历史对话 ──────────────────────────────────────────────────────────────
