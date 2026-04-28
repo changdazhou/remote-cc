@@ -131,4 +131,4 @@ rcc-tui            # 交互式 TUI（无需登录，本地直连）
 
 ## 许可证
 
-[Apache 2.0](LICENSE) © 2024 changdazhou
+[Apache 2.0](LICENSE) © 2026 changdazhou

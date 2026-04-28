@@ -123,4 +123,4 @@ This tool is young and actively evolving. Contributions welcome:
 
 ## License
 
-[Apache 2.0](LICENSE) © 2024 changdazhou
+[Apache 2.0](LICENSE) © 2026 changdazhou
