@@ -263,6 +263,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
 
   // 标记是否是 CC 主动退出（通过 socket 关闭后检查 meta 判断）
   let ccExited = false;
+  let resizeRetry = null;
 
   const onSockData = (chunk) => {
     process.stdout.write(chunk);
@@ -284,6 +285,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
     try { sock.destroy(); } catch (_) {}
     process.stdout.removeListener('resize', sendResize);
     clearInterval(watchdog);
+    if (resizeRetry) { clearTimeout(resizeRetry); resizeRetry = null; }
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.resume();
     // 重置终端状态，清除 Claude 可能留下的 alternate screen 等
@@ -325,6 +327,12 @@ function doAttach(sp, sname, onDetach, sessionId) {
 // ── 通用菜单 ──────────────────────────────────────────────────────────────────
 // items: [{ label, sub?, hint?, _sep?, _disabled? }]
 // 返回 index（number）或 null（q/Esc）
+// 全局只需调用一次，防止叠加内部 data 监听器
+readline.emitKeypressEvents(process.stdin);
+// 防止 Node.js MaxListeners 警告（menu/attach 会动态添加监听器）
+process.stdin.setMaxListeners(50);
+process.stdout.setMaxListeners(50);
+
 function menu(title, items, opts = {}) {
   const { hdr = '', footer = '', banner = false } = opts;
   return new Promise(resolve => {
@@ -379,9 +387,9 @@ function menu(title, items, opts = {}) {
 
     const done = (v) => {
       process.stdin.removeListener('keypress', onKey);
-      try { readline.emitKeypressEvents(process.stdin); } catch (_) {}
+      // 不再重复调用 emitKeypressEvents，避免叠加内部 data 监听器
       if (process.stdin.isTTY) process.stdin.setRawMode(false);
-      process.stdin.resume();  // 确保后续 input() 或 menu() 能正常接收
+      process.stdin.resume();
       wr(A.show);
       resolve(v);
     };
@@ -395,7 +403,6 @@ function menu(title, items, opts = {}) {
       else if (k.ctrl && k.name === 'c') { done(null); wr('\n'); process.exit(0); }
     };
 
-    readline.emitKeypressEvents(process.stdin);
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.on('keypress', onKey);
     render();
