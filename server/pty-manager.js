@@ -262,7 +262,9 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80,
   const sessionName = (name && name.trim()) ? name.trim() : baseName;
   const sessionId   = uuidv4();
   const logPath     = path.join(LOG_DIR, `${sessionId}.log`);
-  const logStream   = fs.createWriteStream(logPath, { flags: 'a' });
+  const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+  // 防止 write-after-end 等 stream 错误未处理导致进程崩溃
+  logStream.on('error', () => {});
 
   const args = [];
   // IS_SANDBOX=1 时自动启用危险模式，否则普通启动
@@ -323,7 +325,8 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80,
     session.buffer += data;
     if (session.buffer.length > SCROLLBACK_LIMIT)
       session.buffer = session.buffer.slice(session.buffer.length - SCROLLBACK_LIMIT);
-    try { logStream.write(data); } catch (_) {}
+    // 通过 session.logStream 访问，避免闭包捕获旧 stream（rotate 后会更新）
+    try { if (session.logStream && !session.logStream.destroyed) session.logStream.write(data); } catch (_) {}
     rotateLogIfNeeded(sessionId);
     session.lastActiveAt = Date.now();
     broadcastData(session, data);
@@ -333,7 +336,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80,
     session.exitCode   = exitCode;
     session.ptyProcess = null;
     session.lastActiveAt = Date.now();
-    try { logStream.end(); } catch (_) {}
+    try { if (session.logStream) session.logStream.end(); } catch (_) {}
     try { if (session.socketServer) session.socketServer.close(); } catch (_) {}
     broadcastJSON(session, { type: 'exit', exitCode });
     // 退出后 5s 自动删除（给客户端时间显示退出消息）
@@ -521,7 +524,9 @@ function rotateLogIfNeeded(sessionId) {
     // 关闭旧 stream，重写文件，重新打开
     try { session.logStream.end(); } catch (_) {}
     fs.writeFileSync(session.logPath, trimmed, 'utf8');
-    session.logStream = fs.createWriteStream(session.logPath, { flags: 'a' });
+    const newStream = fs.createWriteStream(session.logPath, { flags: 'a' });
+    newStream.on('error', () => {});
+    session.logStream = newStream;
   } catch (_) {}
 }
 
