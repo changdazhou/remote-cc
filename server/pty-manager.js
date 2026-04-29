@@ -337,6 +337,13 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, cols = 80,
     session.ptyProcess = null;
     session.lastActiveAt = Date.now();
     try { if (session.logStream) session.logStream.end(); } catch (_) {}
+    // 主动关闭所有已连接的 unix socket 客户端
+    // （socketServer.close() 只停止接受新连接，不会关闭已有连接）
+    for (const client of session.clients) {
+      if (client.type === 'unix') {
+        try { client._socket.destroy(); } catch (_) {}
+      }
+    }
     try { if (session.socketServer) session.socketServer.close(); } catch (_) {}
     broadcastJSON(session, { type: 'exit', exitCode });
     // 退出后 5s 自动删除（给客户端时间显示退出消息）
