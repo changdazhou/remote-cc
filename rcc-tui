@@ -239,8 +239,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
 
   const sock = net.createConnection(sp);
 
-  // 清除 stdin 上所有残留的监听器（menu/input 函数可能留有 keypress/data 监听）
-  // 然后重新设置 rawMode，确保本地终端不回显输入
+  // 清除 stdin 残留监听器
   process.stdin.removeAllListeners('data');
   process.stdin.removeAllListeners('keypress');
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
@@ -249,81 +248,76 @@ function doAttach(sp, sname, onDetach, sessionId) {
   const sendResize = () => {
     const cols = process.stdout.columns || 80;
     const rows = process.stdout.rows    || 24;
-    try { sock.write(`\x00RESIZE:${cols}:${rows}\n`); } catch (_) {}
+    if (!sock.destroyed) try { sock.write(`\x00RESIZE:${cols}:${rows}\n`); } catch (_) {}
   };
 
-  // 拦截 stdin，过滤 Ctrl+]
   const onStdinData = (chunk) => {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     for (let i = 0; i < bytes.length; i++) {
-      if (bytes[i] === 0x1d) { detach(true); return; }  // Ctrl+] 主动断开
+      if (bytes[i] === 0x1d) { detach(true); return; }
     }
-    try { sock.write(bytes); } catch (_) {}
+    if (!sock.destroyed) try { sock.write(bytes); } catch (_) {}
   };
 
-  // 标记是否是 CC 主动退出（通过 socket 关闭后检查 meta 判断）
-  let ccExited = false;
   let resizeRetry = null;
-
-  const onSockData = (chunk) => {
-    process.stdout.write(chunk);
-  };
+  const onSockData = (chunk) => { process.stdout.write(chunk); };
 
   sock.on('connect', () => {
-    // 连接后立即同步本地终端尺寸，让 Claude 按正确宽度渲染
     sendResize();
-    // 再发一次，确保 Claude TUI 完全初始化后也能收到
-    setTimeout(sendResize, 300);
+    resizeRetry = setTimeout(sendResize, 300);
     process.stdout.on('resize', sendResize);
     process.stdin.on('data', onStdinData);
     sock.on('data', onSockData);
   });
 
+  // 防重入：error 和 close 都会触发，只处理一次
   let detached = false;
   const detach = (fromEscape) => {
-    if (detached) return;  // 防止 error+close 双重触发
+    if (detached) return;
     detached = true;
-    process.stdin.removeListener('data', onStdinData);
-    sock.removeListener('data', onSockData);
-    try { sock.destroy(); } catch (_) {}
+
+    process.stdin.removeAllListeners('data');
+    sock.removeAllListeners();
     process.stdout.removeListener('resize', sendResize);
     clearInterval(watchdog);
     if (resizeRetry) { clearTimeout(resizeRetry); resizeRetry = null; }
-    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    if (!sock.destroyed) try { sock.destroy(); } catch (_) {}
+
+    if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
     process.stdin.resume();
-    // 重置终端状态，清除 Claude 可能留下的 alternate screen 等
-    process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
-    if (fromEscape) {
-      // Ctrl+] 主动断开：提示按键再返回，让用户看清状态
-      wr('\r\n' + A.cyan + '[已断开 — 按任意键返回菜单]' + A.R + '\n');
-      setTimeout(onDetach, 600);
-    } else {
-      // CC 退出或 socket 关闭：直接返回菜单
-      wr('\r\n' + A.green + '[会话已结束，返回菜单]' + A.R + '\n');
-      setTimeout(onDetach, 800);
-    }
+    process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
+
+    const msg = fromEscape
+      ? A.cyan + '[已断开]' + A.R
+      : A.green + '[会话已结束]' + A.R;
+    wr(msg + '\n');
+
+    setTimeout(() => {
+      process.stdin.removeAllListeners('data');
+      process.stdin.removeAllListeners('keypress');
+      process.stdin.resume();
+      onDetach();
+    }, fromEscape ? 300 : 500);
   };
 
-  // 服务掉线监测：每 3s 检查一次，服务消失则强制退出 TUI
+  // 服务掉线监测
   const watchdog = setInterval(() => {
-    const info = serverInfo();
-    if (!serverAlive(info)) {
+    if (!serverAlive(serverInfo())) {
+      detached = true;
       clearInterval(watchdog);
-      process.stdin.removeListener('data', onStdinData);
-      sock.removeListener('data', onSockData);
-      try { sock.destroy(); } catch (_) {}
+      process.stdin.removeAllListeners('data');
+      sock.removeAllListeners();
+      if (!sock.destroyed) try { sock.destroy(); } catch (_) {}
       process.stdout.removeListener('resize', sendResize);
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
-      process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
-      wr('\r\n' + A.red + '[服务已停止，rcc-tui 退出]' + A.R + '\n');
+      if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
+      process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
+      wr(A.red + '[服务已停止，rcc-tui 退出]' + A.R + '\n');
       process.exit(0);
     }
   }, 3000);
 
-  sock.on('error', e => { wr('\r\n' + A.red + '[Socket 错误: ' + e.message + ']' + A.R + '\n'); detach(); });
-  sock.on('close', detach);
-  // 保留 Ctrl+C 作为备用（但会发给 PTY，让 claude 自己处理）
-  // 不再用 SIGINT 来断开，改用 Ctrl+]
+  sock.on('error', () => detach(false));
+  sock.on('close', () => detach(false));
 }
 
 // ── 通用菜单 ──────────────────────────────────────────────────────────────────
