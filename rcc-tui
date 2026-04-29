@@ -256,7 +256,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
   const onStdinData = (chunk) => {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     for (let i = 0; i < bytes.length; i++) {
-      if (bytes[i] === 0x1d) { detach(); return; }
+      if (bytes[i] === 0x1d) { detach(true); return; }  // Ctrl+] 主动断开
     }
     try { sock.write(bytes); } catch (_) {}
   };
@@ -279,7 +279,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
     sock.on('data', onSockData);
   });
 
-  const detach = () => {
+  const detach = (fromEscape) => {
     process.stdin.removeListener('data', onStdinData);
     sock.removeListener('data', onSockData);
     try { sock.destroy(); } catch (_) {}
@@ -290,15 +290,14 @@ function doAttach(sp, sname, onDetach, sessionId) {
     process.stdin.resume();
     // 重置终端状态，清除 Claude 可能留下的 alternate screen 等
     process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m');
-    // 检查 meta：session 已 dead 说明 CC 正常退出，否则是断开
-    const meta = loadMeta().find(s => s.sessionId === sessionId);
-    const normalExit = meta && !meta.alive;
-    if (normalExit) {
-      wr('\r\n' + A.green + '[会话已结束]' + A.R + '\n');
-      setTimeout(onDetach, 800);
-    } else {
+    if (fromEscape) {
+      // Ctrl+] 主动断开：提示按键再返回，让用户看清状态
       wr('\r\n' + A.cyan + '[已断开 — 按任意键返回菜单]' + A.R + '\n');
       setTimeout(onDetach, 600);
+    } else {
+      // CC 退出或 socket 关闭：直接返回菜单
+      wr('\r\n' + A.green + '[会话已结束，返回菜单]' + A.R + '\n');
+      setTimeout(onDetach, 800);
     }
   };
 
