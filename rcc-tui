@@ -284,7 +284,8 @@ function doAttach(sp, sname, onDetach, sessionId) {
     if (!sock.destroyed) try { sock.destroy(); } catch (_) {}
 
     if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
-    process.stdin.resume();
+    // 不调 resume()，让 stdin 保持 paused 状态
+    // menu() 会通过 setRawMode(true) 重新激活它
     process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
 
     const msg = fromEscape
@@ -292,12 +293,15 @@ function doAttach(sp, sname, onDetach, sessionId) {
       : A.green + '[会话已结束]' + A.R;
     wr(msg + '\n');
 
+    // CC 退出时等 6s（服务端 5s 后清理 session），确保 meta 文件已更新
+    const delay = fromEscape ? 300 : 6000;
     setTimeout(() => {
       process.stdin.removeAllListeners('data');
       process.stdin.removeAllListeners('keypress');
-      process.stdin.resume();
+      // pause 确保不在 flowing 模式，menu() 的 setRawMode+on(keypress) 能正常工作
+      process.stdin.pause();
       onDetach();
-    }, fromEscape ? 300 : 500);
+    }, delay);
   };
 
   // 服务掉线监测
@@ -384,8 +388,8 @@ function menu(title, items, opts = {}) {
     const done = (v) => {
       process.stdin.removeListener('keypress', onKey);
       // 不再重复调用 emitKeypressEvents，避免叠加内部 data 监听器
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
-      process.stdin.resume();
+      if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
+      // 不调 resume()，保持 paused 状态，下一个 menu() 调用会通过 setRawMode 激活
       wr(A.show);
       resolve(v);
     };
