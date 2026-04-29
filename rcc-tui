@@ -279,7 +279,10 @@ function doAttach(sp, sname, onDetach, sessionId) {
     sock.on('data', onSockData);
   });
 
+  let detached = false;
   const detach = (fromEscape) => {
+    if (detached) return;  // 防止 error+close 双重触发
+    detached = true;
     process.stdin.removeListener('data', onStdinData);
     sock.removeListener('data', onSockData);
     try { sock.destroy(); } catch (_) {}
@@ -402,6 +405,8 @@ function menu(title, items, opts = {}) {
       else if (k.ctrl && k.name === 'c') { done(null); wr('\n'); process.exit(0); }
     };
 
+    // 确保没有残留的 keypress 监听器
+    process.stdin.removeAllListeners('keypress');
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.on('keypress', onKey);
     render();
