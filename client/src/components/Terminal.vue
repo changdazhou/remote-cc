@@ -134,6 +134,7 @@ import { settings, FONT_FAMILIES } from '../settings.js';
 const props = defineProps({
   theme: { type: String, default: 'cyber' },
   symbolMode: { type: String, default: 'auto' },
+  optimisticEcho: { type: Boolean, default: false },
 });
 const emit = defineEmits(['input', 'resize', 'paste']);
 
@@ -280,6 +281,7 @@ function handleClipboardPaste(e) {
     clearNativePasteFallback();
     awaitingPaste = false;
     e.preventDefault();
+    resumeOutputForInput();
     emit('paste', text);
     return true;
   }
@@ -304,6 +306,8 @@ let terminalResponseWriteSuppressDepth = 0;
 let terminalResponseSuppressUntil = 0;
 let terminalAutoResponsePending = '';
 let terminalAutoResponsePendingAt = 0;
+let optimisticEchoPending = '';
+let optimisticEchoPendingAt = 0;
 
 // ── 自动锁底 + 上划暂停更新 ──────────────────────────────────────────────────
 let userScrolled = false;       // 用户是否主动上划
@@ -314,6 +318,9 @@ let autoScrollUntil = 0;         // 程序写入触发的滚动不应暂停锁�
 const pendingWrites = [];        // 用户上划时缓存的输出
 let boundViewport = null;
 const SCROLL_RESUME_DELAY = 5000;
+const TERMINAL_SELECTION_BG = 'rgba(37, 99, 235, 0.82)';
+const TERMINAL_SELECTION_FG = '#FFFFFF';
+const OPTIMISTIC_ECHO_TTL = 2500;
 
 function isMobileViewport() {
   if (typeof window === 'undefined') return false;
@@ -346,7 +353,7 @@ function onViewportScroll() {
     scheduleScrollResume();
   } else if (now < autoScrollUntil) {
     return;
-  } else if (isMobileViewport()) {
+  } else {
     userScrolled = true;
     scheduleScrollResume();
   }
@@ -375,7 +382,6 @@ function bindViewport(vp) {
   vp.addEventListener('wheel', markUserScrollIntent, { passive: true });
   vp.addEventListener('touchstart', markUserScrollIntent, { passive: true });
   vp.addEventListener('touchmove', markUserScrollIntent, { passive: true });
-  vp.addEventListener('pointerdown', markUserScrollIntent, { passive: true });
 }
 
 function unbindViewport() {
@@ -384,7 +390,6 @@ function unbindViewport() {
   boundViewport.removeEventListener('wheel', markUserScrollIntent);
   boundViewport.removeEventListener('touchstart', markUserScrollIntent);
   boundViewport.removeEventListener('touchmove', markUserScrollIntent);
-  boundViewport.removeEventListener('pointerdown', markUserScrollIntent);
   boundViewport = null;
 }
 
@@ -400,7 +405,7 @@ function scrollToBottomSoon() {
 
 function flushPending() {
   if (pendingWrites.length === 0) return;
-  const batch = pendingWrites.splice(0);
+  const batch = compactWriteItems(pendingWrites.splice(0));
   let remaining = batch.length;
   batch.forEach(item => writeToTerminal(item.data, { suppressInput: item.suppressInput }, () => {
     remaining -= 1;
@@ -408,18 +413,85 @@ function flushPending() {
   }));
 }
 
+function compactWriteItems(items) {
+  const compacted = [];
+  for (const item of items) {
+    if (!item?.data) continue;
+    const tail = compacted[compacted.length - 1];
+    if (tail && tail.suppressInput === item.suppressInput) {
+      tail.data += item.data;
+    } else {
+      compacted.push({ ...item });
+    }
+  }
+  return compacted;
+}
+
+function resetOptimisticEcho() {
+  optimisticEchoPending = '';
+  optimisticEchoPendingAt = 0;
+}
+
+function isPrintableEchoInput(data) {
+  if (!props.optimisticEcho || !term || !data || typeof data !== 'string') return false;
+  if (replaySuppressDepth > 0 || mobileCopyMode.value) return false;
+  if (data.length > 128) return false;
+  if (data.includes('\x1b')) return false;
+  return !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(data);
+}
+
+function echoLocalInput(data) {
+  if (!isPrintableEchoInput(data)) return;
+  optimisticEchoPending += data;
+  optimisticEchoPendingAt = Date.now();
+  term.write(data);
+}
+
+function stripOptimisticEcho(data, options = {}) {
+  if (!props.optimisticEcho || options.suppressInput || !optimisticEchoPending) return data;
+  if (Date.now() - optimisticEchoPendingAt > OPTIMISTIC_ECHO_TTL) {
+    resetOptimisticEcho();
+    return data;
+  }
+  if (!data || typeof data !== 'string') return data;
+
+  if (data.startsWith(optimisticEchoPending)) {
+    const stripped = data.slice(optimisticEchoPending.length);
+    resetOptimisticEcho();
+    return stripped;
+  }
+  if (optimisticEchoPending.startsWith(data)) {
+    optimisticEchoPending = optimisticEchoPending.slice(data.length);
+    optimisticEchoPendingAt = Date.now();
+    return '';
+  }
+
+  resetOptimisticEcho();
+  return data;
+}
+
 // 对外暴露的 write：上划时缓存，否则直接写并锁底
 function smartWrite(data, options = {}) {
-  const item = { data, suppressInput: Boolean(options.suppressInput) };
-  if (userScrolled || mobileCopyMode.value) {
+  const output = stripOptimisticEcho(data, options);
+  if (!output) return;
+  const item = { data: output, suppressInput: Boolean(options.suppressInput) };
+  if (mobileCopyMode.value || (isMobileViewport() && userScrolled)) {
     // 超出上限（跟 scrollback 一致）时丢弃最老的，保留最新
     pendingWrites.push(item);
     const max = settings.scrollback || 5000;
     if (pendingWrites.length > max) pendingWrites.shift();
   } else {
     // xterm write is async; scroll after render so mobile Codex output stays pinned.
-    writeToTerminal(data, options, scrollToBottomSoon);
+    writeToTerminal(output, options, scrollToBottomSoon);
   }
+}
+
+function resumeOutputForInput() {
+  if (mobileCopyMode.value) return;
+  userScrolled = false;
+  clearTimeout(scrollResumeTimer);
+  if (pendingWrites.length > 0) flushPending();
+  else scrollToBottomSoon();
 }
 
 function writeToTerminal(data, options = {}, callback) {
@@ -449,6 +521,7 @@ function markTerminalResponseSuppression(ms) {
 }
 
 function beginReplay() {
+  resetOptimisticEcho();
   replaySuppressDepth += 1;
   markTerminalResponseSuppression(5000);
 }
@@ -577,9 +650,10 @@ onMounted(() => {
 
   const td = THEMES[props.theme] || THEMES.cyber;
   const fontDef = FONT_FAMILIES.find(f => f.id === settings.fontFamily) || FONT_FAMILIES[0];
+  const terminalTheme = withSelectionTheme(td.term);
 
   term = new Terminal({
-    theme:       td.term,
+    theme:       terminalTheme,
     fontFamily:  fontDef.value,
     fontSize:    settings.fontSize,
     lineHeight:  settings.lineHeight,
@@ -626,6 +700,8 @@ onMounted(() => {
     const shouldSuppress = suppressingTerminalResponses();
     const input = stripTerminalAutoResponses(data, { holdPartial: shouldSuppress });
     if (!input) return;
+    resumeOutputForInput();
+    echoLocalInput(input);
     emit('input', input);
     // currentLine 统一由 App.vue 的 onTermInput 通过 trackInput() 更新
     // 这里不再重复处理，避免双重追踪
@@ -666,7 +742,7 @@ onMounted(() => {
 
   watch(() => props.theme, t => {
     const theme = THEMES[t] || THEMES.cyber;
-    term.options.theme = theme.term;
+    term.options.theme = withSelectionTheme(theme.term);
     if (wrapRef.value) wrapRef.value.style.background = theme.bg;
   });
 
@@ -734,11 +810,13 @@ function scrollToBottom() {
 }
 function clear() {
   pendingWrites.splice(0);
+  resetOptimisticEcho();
   term?.clear();
 }
 
 // 供外部（SymbolBar 通过 App）同步更新行追踪，保持与键盘输入相同的逻辑
 function trackInput(data) {
+  resumeOutputForInput();
   if (data === '\r' || data === '\n' || data === '\x03' || data === '\x04') {
     currentLine.value = '';
   } else if (data === '\x7f' || data === '\b') {
@@ -751,6 +829,14 @@ function trackInput(data) {
 function getCols() { return term?.cols ?? 80; }
 function getRows() { return term?.rows ?? 24; }
 defineExpose({ write, writeReplay, beginReplay, endReplay, fit, scrollToBottom, clear, trackInput, getCols, getRows });
+
+function withSelectionTheme(theme = {}) {
+  return {
+    ...theme,
+    selectionBackground: theme.selectionBackground || TERMINAL_SELECTION_BG,
+    selectionForeground: theme.selectionForeground || TERMINAL_SELECTION_FG,
+  };
+}
 
 watch(() => props.symbolMode, mode => {
   if (mode !== 'shell') mobileModifier.value = '';
@@ -818,7 +904,9 @@ function applyMobileModifier(data) {
 
 function emitMobileInput(data) {
   if (!data) return;
-  emit('input', applyMobileModifier(data));
+  const input = applyMobileModifier(data);
+  echoLocalInput(input);
+  emit('input', input);
   nextTick(() => focusMobileInput());
 }
 
@@ -1016,7 +1104,12 @@ function fallbackCopy(text) {
 function doPaste() {
   if (navigator.clipboard?.readText) {
     navigator.clipboard.readText()
-      .then(text => { if (text) emit('paste', text); })
+      .then(text => {
+        if (text) {
+          resumeOutputForInput();
+          emit('paste', text);
+        }
+      })
       .catch(() => {
         // HTTP 下无权限，用户需要用右键菜单或 Ctrl+Shift+V 触发原生粘贴
       });
@@ -1080,7 +1173,12 @@ function ctxPasteClick() {
   // 先尝试 Clipboard API
   if (navigator.clipboard?.readText) {
     navigator.clipboard.readText()
-      .then(text => { if (text) emit('paste', text); })
+      .then(text => {
+        if (text) {
+          resumeOutputForInput();
+          emit('paste', text);
+        }
+      })
       .catch(() => {
         // 降级：聚焦隐藏 input，等用户 Ctrl+V
         awaitingPaste = true;

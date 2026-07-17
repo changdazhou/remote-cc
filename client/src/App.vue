@@ -178,6 +178,7 @@
             :key="entry.sid"
             v-show="entry.sid === activeSessionId"
             :theme="theme"
+            optimistic-echo
             :ref="el => setTermRef(entry.sid, el)"
             @input="onTermInput(entry.sid, $event)"
             @resize="onTermResize(entry.sid, $event)"
@@ -751,14 +752,22 @@ async function startEntryHttp(entry) {
   let destroyed = false;
   let retryDelay = 1000;
   let openRetryDelay = 1000;
+  let pollController = null;
   entry.transport = 'http';
   entry.connectionStatus = 'connecting';
   entry.ws = null;
+  entry._abortHttpPoll = () => {
+    try { pollController?.abort(); } catch (_) {}
+  };
 
   const poll = async (cursor) => {
     while (!destroyed) {
+      pollController = typeof AbortController !== 'undefined' ? new AbortController() : null;
       try {
-        const result = await api.terminal.poll(entry.attachSessionId || entry.sid, cursor, HTTP_POLL_WAIT);
+        const result = await api.terminal.poll(entry.attachSessionId || entry.sid, cursor, HTTP_POLL_WAIT, {
+          signal: pollController?.signal,
+        });
+        if (pollController?.signal.aborted) continue;
         retryDelay = 1000;
         if (destroyed) return;
         markEntryConnected(entry, 'http', {
@@ -773,15 +782,22 @@ async function startEntryHttp(entry) {
         }
       } catch (_) {
         if (destroyed) return;
+        if (pollController?.signal.aborted) continue;
         markEntryDisconnected(entry);
         entry.connectionStatus = 'connecting';
         await new Promise(resolve => setTimeout(resolve, retryDelay));
         retryDelay = Math.min(retryDelay * 1.5, 15000);
+      } finally {
+        pollController = null;
       }
     }
   };
 
-  entry._destroy = () => { destroyed = true; };
+  entry._destroy = () => {
+    destroyed = true;
+    entry._abortHttpPoll = null;
+    try { pollController?.abort(); } catch (_) {}
+  };
 
   while (!destroyed) {
     try {
@@ -812,6 +828,10 @@ async function startEntryHttp(entry) {
       openRetryDelay = Math.min(openRetryDelay * 1.5, 15000);
     }
   }
+}
+
+function interruptEntryHttpPoll(entry) {
+  try { entry?._abortHttpPoll?.(); } catch (_) {}
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -1098,6 +1118,7 @@ function onTermInput(sid, data) {
     entry.ws.send(data);
   } else if (entry?.transport === 'http') {
     const el = termRefs[sid];
+    interruptEntryHttpPoll(entry);
     api.terminal.input(entry.attachSessionId || entry.sid, {
       data,
       cols: el?.getCols?.() ?? 80,
@@ -1123,6 +1144,7 @@ function onTermPaste(sid, text) {
     entry.ws.send(text);
   } else if (entry?.transport === 'http') {
     const el = termRefs[sid];
+    interruptEntryHttpPoll(entry);
     api.terminal.input(entry.attachSessionId || entry.sid, {
       data: text,
       cols: el?.getCols?.() ?? 80,
@@ -1146,6 +1168,7 @@ function sendToActiveTerminal(text) {
     view.value = 'terminal';
   } else if (entry?.transport === 'http') {
     const el = termRefs[sid];
+    interruptEntryHttpPoll(entry);
     api.terminal.input(entry.attachSessionId || entry.sid, {
       data: text,
       cols: el?.getCols?.() ?? 80,

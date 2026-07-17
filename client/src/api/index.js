@@ -49,9 +49,18 @@ async function apiFetch(path, opts = {}) {
   const { timeoutMs = 0, ...fetchOpts } = opts;
   let timer = null;
   let controller = null;
-  if (timeoutMs > 0 && typeof AbortController !== 'undefined' && !fetchOpts.signal) {
+  let abortListener = null;
+  if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
+    const externalSignal = fetchOpts.signal;
     controller = new AbortController();
     fetchOpts.signal = controller.signal;
+    if (externalSignal) {
+      if (externalSignal.aborted) controller.abort();
+      else {
+        abortListener = () => controller.abort();
+        externalSignal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
     timer = setTimeout(() => controller.abort(), timeoutMs);
   }
   try {
@@ -67,6 +76,7 @@ async function apiFetch(path, opts = {}) {
     throw err;
   } finally {
     if (timer) clearTimeout(timer);
+    if (abortListener) opts.signal?.removeEventListener?.('abort', abortListener);
   }
 }
 
@@ -177,9 +187,9 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     }),
-    poll:   (sessionId, cursor = 0, wait = 5000) => apiFetch(
+    poll:   (sessionId, cursor = 0, wait = 5000, options = {}) => apiFetch(
       `/api/terminal/${encodeURIComponent(sessionId)}/poll?cursor=${encodeURIComponent(cursor)}&wait=${encodeURIComponent(wait)}`,
-      { timeoutMs: pollTimeout(wait) },
+      { timeoutMs: pollTimeout(wait), ...options },
     ),
   },
   shell: {
