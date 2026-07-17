@@ -5,8 +5,30 @@ const crypto = require('crypto');
 const { normalizeAgent } = require('./agent-config');
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
-const CODEX_HISTORY_FILE = path.join(os.homedir(), '.codex', 'history.jsonl');
-const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
+const CODEX_HOME_DIRS = uniquePaths([
+  process.env.RCC_CODEX_HOME,
+  process.env.CODEX_HOME,
+  path.join(os.homedir(), '.baidu-cx'),
+  path.join(os.homedir(), '.codex'),
+].filter(Boolean).map(expandHome));
+
+function expandHome(input) {
+  if (!input || input === '~') return os.homedir();
+  if (input.startsWith('~/') || input.startsWith('~\\')) return path.join(os.homedir(), input.slice(2));
+  return input;
+}
+
+function uniquePaths(paths) {
+  const seen = new Set();
+  const result = [];
+  for (const p of paths) {
+    const key = path.resolve(p);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(p);
+  }
+  return result;
+}
 
 function getProjects(agent = 'claude') {
   return normalizeAgent(agent) === 'codex' ? getCodexProjects() : getClaudeProjects();
@@ -118,19 +140,27 @@ function readSession(sessionId, agent = 'claude') {
 }
 
 function getCodexHistoryEntries() {
-  if (!fs.existsSync(CODEX_HISTORY_FILE)) return [];
-  try {
-    return fs.readFileSync(CODEX_HISTORY_FILE, 'utf8')
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map(line => {
-        try { return JSON.parse(line); } catch (_) { return null; }
-      })
-      .filter(item => item && item.session_id);
-  } catch (_) {
-    return [];
+  const entries = [];
+  for (const filePath of listCodexHistoryFiles()) {
+    try {
+      const items = fs.readFileSync(filePath, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(line => {
+          try { return JSON.parse(line); } catch (_) { return null; }
+        })
+        .filter(item => item && item.session_id);
+      entries.push(...items);
+    } catch (_) {}
   }
+  return entries.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+function listCodexHistoryFiles() {
+  return CODEX_HOME_DIRS
+    .map(dir => path.join(dir, 'history.jsonl'))
+    .filter(filePath => fs.existsSync(filePath));
 }
 
 function getCodexProjects() {
@@ -198,9 +228,10 @@ function getCodexSessionsFromFiles() {
 }
 
 function listCodexSessionFiles() {
-  if (!fs.existsSync(CODEX_SESSIONS_DIR)) return [];
   const files = [];
-  const stack = [CODEX_SESSIONS_DIR];
+  const stack = CODEX_HOME_DIRS
+    .map(dir => path.join(dir, 'sessions'))
+    .filter(dir => fs.existsSync(dir));
   while (stack.length) {
     const dir = stack.pop();
     let entries = [];

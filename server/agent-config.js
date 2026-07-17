@@ -54,14 +54,16 @@ const AGENTS = {
       'codex',
     ],
     buildArgs({ cwd, resumeSessionId }) {
-      const common = [
-        '--cd', cwd,
-        '--no-alt-screen',
+      const globalArgs = [
         '-c', `shell_environment_policy.exclude=${JSON.stringify(PROXY_ENV_KEYS)}`,
       ];
-      if (process.env.IS_SANDBOX === '1') common.push('--dangerously-bypass-approvals-and-sandbox');
-      if (resumeSessionId) return ['resume', ...common, resumeSessionId];
-      return common;
+      const sessionArgs = [
+        '--cd', cwd,
+        '--no-alt-screen',
+      ];
+      if (process.env.IS_SANDBOX === '1') globalArgs.push('--dangerously-bypass-approvals-and-sandbox');
+      if (resumeSessionId) return [...globalArgs, 'resume', ...sessionArgs, resumeSessionId];
+      return [...globalArgs, ...sessionArgs];
     },
   },
 };

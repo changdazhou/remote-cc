@@ -31,12 +31,45 @@ const ENV_FILE    = path.join(APP_DIR, '.env');
 const SOCK_DIR    = path.join(RCC_DIR, 'sockets');
 const LOCAL_TOKEN = path.join(RCC_DIR, 'local.token');
 const CLAUDE_DIR  = path.join(HOME, '.claude', 'projects');
-const CODEX_HISTORY_FILE = path.join(HOME, '.codex', 'history.jsonl');
-const CODEX_SESSIONS_DIR = path.join(HOME, '.codex', 'sessions');
+const CODEX_HOME_DIRS = uniquePaths([
+  process.env.RCC_CODEX_HOME,
+  process.env.CODEX_HOME,
+  path.join(HOME, '.baidu-cx'),
+  path.join(HOME, '.codex'),
+].filter(Boolean).map(expandHome));
+
+function expandHome(input) {
+  if (!input || input === '~') return HOME;
+  if (input.startsWith('~/') || input.startsWith('~\\')) return path.join(HOME, input.slice(2));
+  return input;
+}
+
+function compactHome(input) {
+  if (!input) return '';
+  if (input === HOME) return '~';
+  if (input.startsWith(HOME + path.sep)) return '~' + path.sep + input.slice(HOME.length + 1);
+  return input;
+}
+
+function uniquePaths(paths) {
+  const seen = new Set();
+  const result = [];
+  for (const p of paths) {
+    const key = path.resolve(p);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(p);
+  }
+  return result;
+}
+
+function codexHistoryLabel() {
+  return CODEX_HOME_DIRS.map(dir => compactHome(path.join(dir, 'sessions'))).join(', ');
+}
 
 const AGENTS = {
   claude: { id: 'claude', name: 'Claude Code', history: '~/.claude/projects/' },
-  codex:  { id: 'codex',  name: 'Codex',       history: '~/.codex/sessions/' },
+  codex:  { id: 'codex',  name: 'Codex',       history: codexHistoryLabel() },
 };
 function normalizeAgent(agent) { return AGENTS[agent] ? agent : 'claude'; }
 function agentName(agent) { return AGENTS[normalizeAgent(agent)].name; }
@@ -193,17 +226,25 @@ function loadCodexSessions() {
 }
 
 function loadCodexHistoryEntries() {
-  if (!fs.existsSync(CODEX_HISTORY_FILE)) return [];
-  try {
-    return fs.readFileSync(CODEX_HISTORY_FILE, 'utf8')
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
-      .filter(item => item?.session_id);
-  } catch (_) {
-    return [];
+  const entries = [];
+  for (const filePath of listCodexHistoryFiles()) {
+    try {
+      const items = fs.readFileSync(filePath, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(line => { try { return JSON.parse(line); } catch (_) { return null; } })
+        .filter(item => item?.session_id);
+      entries.push(...items);
+    } catch (_) {}
   }
+  return entries.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+function listCodexHistoryFiles() {
+  return CODEX_HOME_DIRS
+    .map(dir => path.join(dir, 'history.jsonl'))
+    .filter(filePath => fs.existsSync(filePath));
 }
 
 function loadCodexSessionsFromFiles() {
@@ -216,9 +257,10 @@ function loadCodexSessionsFromFiles() {
 }
 
 function listCodexSessionFiles() {
-  if (!fs.existsSync(CODEX_SESSIONS_DIR)) return [];
   const files = [];
-  const stack = [CODEX_SESSIONS_DIR];
+  const stack = CODEX_HOME_DIRS
+    .map(dir => path.join(dir, 'sessions'))
+    .filter(dir => fs.existsSync(dir));
   while (stack.length) {
     const dir = stack.pop();
     let entries = [];
@@ -718,7 +760,7 @@ async function pageMain() {
     items.push({ label: A.cyan + '＋  新建 Codex 对话' + A.R, _type: 'new', _agent: 'codex' });
   }
   items.push({ label: A.blue + '⏎  恢复 Claude Code 历史' + A.R, hint: '从 ~/.claude 加载历史', _type: 'history', _agent: 'claude' });
-  items.push({ label: A.blue + '⏎  恢复 Codex 历史' + A.R, hint: '从 ~/.codex/sessions 加载历史', _type: 'history', _agent: 'codex' });
+  items.push({ label: A.blue + '⏎  恢复 Codex 历史' + A.R, hint: `从 ${AGENTS.codex.history} 加载历史`, _type: 'history', _agent: 'codex' });
   items.push({ label: A.gray + '↻  刷新' + A.R, _type: 'refresh' });
   items.push({ label: A.gray + '✕  退出' + A.R, _type: 'quit' });
 

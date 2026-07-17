@@ -34,12 +34,14 @@ RC_USER="${RC_USER:-admin}"
 RC_PASS="${RC_PASS:-changeme}"
 CLAUDE_BIN="${CLAUDE_BIN:-}"
 CODEX_BIN="${CODEX_BIN:-}"
+CODEX_HOME="${CODEX_HOME:-$HOME/.baidu-cx}"
 RCC_AGENT="${RCC_AGENT:-claude}"
 CLAUDE_PROXY="${CLAUDE_PROXY:-}"
 CODEX_PROXY="${CODEX_PROXY:-}"
 CLAUDE_NO_PROXY="${CLAUDE_NO_PROXY:-}"
 CODEX_NO_PROXY="${CODEX_NO_PROXY:-}"
 AGENT_NO_PROXY="${AGENT_NO_PROXY:-}"
+ONEAPI_AUTH_TOKEN="${ONEAPI_AUTH_TOKEN:-}"
 IS_SANDBOX="${IS_SANDBOX:-}"
 
 # 自动检测 node 路径
@@ -115,11 +117,13 @@ do_watchdog() {
     export RCC_AGENT
     [[ -n "$CLAUDE_BIN"   ]] && export CLAUDE_BIN
     [[ -n "$CODEX_BIN"    ]] && export CODEX_BIN
+    [[ -n "$CODEX_HOME"   ]] && export CODEX_HOME
     [[ -n "$CLAUDE_PROXY" ]] && export CLAUDE_PROXY
     [[ -n "$CODEX_PROXY"  ]] && export CODEX_PROXY
     [[ -n "$CLAUDE_NO_PROXY" ]] && export CLAUDE_NO_PROXY
     [[ -n "$CODEX_NO_PROXY"  ]] && export CODEX_NO_PROXY
     [[ -n "$AGENT_NO_PROXY"  ]] && export AGENT_NO_PROXY
+    [[ -n "$ONEAPI_AUTH_TOKEN" ]] && export ONEAPI_AUTH_TOKEN
     [[ -n "$IS_SANDBOX"   ]] && export IS_SANDBOX
     "$NODE" "$SERVER_DIR/proxy.js"
     EXIT=$?
