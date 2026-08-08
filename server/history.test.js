@@ -91,3 +91,31 @@ test('codex home paths with trailing separators are not read twice', () => {
   assert.equal(sessions[0].sessionId, sessionId);
   assert.equal(sessions[0].messageCount, 1);
 });
+
+test('codex metadata is extracted from a bounded prefix of huge session files', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rcc-history-'));
+  const sessionId = '019f6ffc-a6f0-7560-b2c2-e8781cb15556';
+  const cwd = '/workspace/huge-history';
+  const filePath = path.join(
+    home,
+    '.baidu-cx',
+    'sessions',
+    '2026',
+    '07',
+    '17',
+    `rollout-2026-07-17T20-10-56-${sessionId}.jsonl`
+  );
+
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(
+    filePath,
+    `{"timestamp":"2026-07-17T12:10:56.634Z","type":"session_meta","payload":{"id":"${sessionId}","cwd":"${cwd}","padding":"${'x'.repeat(128 * 1024)}"}}\n`
+  );
+
+  const history = loadHistoryWithHome(home);
+  const sessions = history.getSessions('codex', 'codex');
+
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].sessionId, sessionId);
+  assert.equal(sessions[0].cwd, cwd);
+});

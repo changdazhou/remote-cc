@@ -11,6 +11,11 @@ const CODEX_HOME_DIRS = uniquePaths([
   path.join(os.homedir(), '.baidu-cx'),
   path.join(os.homedir(), '.codex'),
 ].filter(Boolean).map(expandHome));
+const CODEX_HISTORY_CACHE_TTL_MS = positiveInt(process.env.RCC_HISTORY_CACHE_TTL_MS, 15000);
+const CODEX_SESSION_META_BYTES = positiveInt(process.env.RCC_CODEX_SESSION_META_BYTES, 64 * 1024);
+const CODEX_SESSION_META_LINES = 20;
+
+let codexSessionsCache = { sessions: null, expiresAt: 0 };
 
 function expandHome(input) {
   if (!input || input === '~') return os.homedir();
@@ -22,12 +27,21 @@ function uniquePaths(paths) {
   const seen = new Set();
   const result = [];
   for (const p of paths) {
-    const key = path.resolve(p);
+    const key = canonicalPathKey(p);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(p);
   }
   return result;
+}
+
+function canonicalPathKey(p) {
+  try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); }
+}
+
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function getProjects(agent = 'claude') {
@@ -193,6 +207,11 @@ function getCodexSessions(projectId) {
 }
 
 function buildCodexSessions() {
+  const now = Date.now();
+  if (codexSessionsCache.sessions && now < codexSessionsCache.expiresAt) {
+    return codexSessionsCache.sessions;
+  }
+
   const byId = getCodexSessionsFromFiles();
   for (const item of getCodexHistoryEntries()) {
     const id = item.session_id;
@@ -212,14 +231,21 @@ function buildCodexSessions() {
     byId.set(id, current);
   }
 
-  return Array.from(byId.values())
+  const sessions = Array.from(byId.values())
     .map(session => normalizeCodexSession(session))
     .sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+  codexSessionsCache = {
+    sessions,
+    expiresAt: Date.now() + CODEX_HISTORY_CACHE_TTL_MS,
+  };
+  return sessions;
 }
 
 function getCodexSessionsFromFiles() {
   const byId = new Map();
   for (const filePath of listCodexSessionFiles()) {
+    const idHint = codexSessionIdFromFilePath(filePath);
+    if (idHint && byId.get(idHint)?.cwd) continue;
     const session = readCodexSessionFile(filePath);
     if (!session || !session.sessionId) continue;
     byId.set(session.sessionId, session);
@@ -258,56 +284,106 @@ function readCodexSessionFile(filePath) {
   }
 
   const session = {
-    sessionId: '',
+    sessionId: codexSessionIdFromFilePath(filePath),
     lastModified: stat.mtime.toISOString(),
     lastMessage: '',
     messageCount: 0,
     cwd: '',
   };
 
-  let content = '';
-  try {
-    content = fs.readFileSync(filePath, 'utf8');
-  } catch (_) {
-    return null;
-  }
-
-  for (const line of content.split('\n')) {
+  const prefix = readFilePrefix(filePath, CODEX_SESSION_META_BYTES);
+  const lines = prefix.split('\n').filter(Boolean).slice(0, CODEX_SESSION_META_LINES);
+  for (const line of lines) {
     if (!line.trim()) continue;
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch (_) {
-      continue;
-    }
-
-    if (obj.timestamp && new Date(obj.timestamp) > new Date(session.lastModified)) {
-      session.lastModified = new Date(obj.timestamp).toISOString();
-    }
-
-    if (obj.type === 'session_meta' && obj.payload) {
-      if (!session.sessionId && obj.payload.id) session.sessionId = obj.payload.id;
-      if (!session.cwd && obj.payload.cwd) session.cwd = obj.payload.cwd;
-      if (obj.payload.timestamp && new Date(obj.payload.timestamp) > new Date(session.lastModified)) {
-        session.lastModified = new Date(obj.payload.timestamp).toISOString();
-      }
-    }
-
-    if (obj.type === 'turn_context' && obj.payload && !session.cwd && obj.payload.cwd) {
-      session.cwd = obj.payload.cwd;
-    }
-
-    if (obj.type === 'response_item' && obj.payload?.type === 'message') {
-      const role = obj.payload.role;
-      if (role === 'user' || role === 'assistant') session.messageCount += 1;
-      if (role === 'user') {
-        const text = extractCodexMessageText(obj.payload.content);
-        if (text && !isEnvironmentContext(text)) session.lastMessage = text.slice(0, 100);
-      }
-    }
+    applyCodexSessionLine(session, line);
+    if (session.sessionId && session.cwd) break;
   }
 
-  return session;
+  return session.sessionId ? session : null;
+}
+
+function readFilePrefix(filePath, maxBytes) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    const bytesRead = fs.readSync(fd, buffer, 0, maxBytes, 0);
+    return buffer.toString('utf8', 0, bytesRead);
+  } catch (_) {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
+function applyCodexSessionLine(session, line) {
+  let obj;
+  try {
+    obj = JSON.parse(line);
+  } catch (_) {
+    applyCodexSessionLineFallback(session, line);
+    return;
+  }
+
+  updateSessionLastModified(session, obj.timestamp);
+
+  if (obj.type === 'session_meta' && obj.payload) {
+    if (!session.sessionId && obj.payload.id) session.sessionId = obj.payload.id;
+    if (!session.cwd && obj.payload.cwd) session.cwd = obj.payload.cwd;
+    updateSessionLastModified(session, obj.payload.timestamp);
+  }
+
+  if (obj.type === 'turn_context' && obj.payload && !session.cwd && obj.payload.cwd) {
+    session.cwd = obj.payload.cwd;
+  }
+
+  if (obj.type === 'response_item' && obj.payload?.type === 'message' && obj.payload.role === 'user') {
+    const text = extractCodexMessageText(obj.payload.content);
+    if (text && !isEnvironmentContext(text)) session.lastMessage = text.slice(0, 100);
+  }
+}
+
+function applyCodexSessionLineFallback(session, line) {
+  if (line.includes('"session_meta"')) {
+    if (!session.sessionId) session.sessionId = extractJsonStringField(line, 'id') || session.sessionId;
+    if (!session.cwd) session.cwd = extractJsonStringField(line, 'cwd') || session.cwd;
+    updateSessionLastModified(session, extractJsonStringField(line, 'timestamp'));
+    return;
+  }
+
+  if (line.includes('"turn_context"') && !session.cwd) {
+    session.cwd = extractJsonStringField(line, 'cwd') || session.cwd;
+  }
+}
+
+function updateSessionLastModified(session, timestamp) {
+  if (!timestamp) return;
+  const next = new Date(timestamp);
+  if (!Number.isFinite(next.getTime())) return;
+  if (next > new Date(session.lastModified)) {
+    session.lastModified = next.toISOString();
+  }
+}
+
+function codexSessionIdFromFilePath(filePath) {
+  const matches = path.basename(filePath).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/ig);
+  return matches && matches.length ? matches[matches.length - 1] : '';
+}
+
+function extractJsonStringField(text, field) {
+  const match = text.match(new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`));
+  if (!match) return '';
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch (_) {
+    return match[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+}
+
+function mergeCodexMessageCount(session) {
+  return session.historyCount || session.messageCount || 0;
 }
 
 function extractCodexMessageText(content) {
@@ -323,7 +399,7 @@ function isEnvironmentContext(text) {
 
 function normalizeCodexSession(session) {
   const cwd = session.cwd || '~';
-  const messageCount = session.messageCount || session.historyCount || 0;
+  const messageCount = mergeCodexMessageCount(session);
   return {
     sessionId: session.sessionId,
     projectId: codexProjectId(cwd),

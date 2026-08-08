@@ -171,7 +171,7 @@ async function refreshAgents() {
     const list = await api.getAgents();
     agentStatuses.value = Array.isArray(list) ? list : [];
     pickAvailableAgent();
-    if (tab.value === 'resume' && canStart.value && !histLoaded && !histLoading.value) {
+    if (tab.value === 'resume' && !histLoaded && !histLoading.value) {
       loadHistory();
     }
   } catch (_) {
@@ -268,7 +268,6 @@ function setAgent(nextAgent) {
 }
 
 async function loadHistory() {
-  if (!canStart.value) return;
   if (histLoaded) return;
   histLoading.value = true;
   histError.value = '';

@@ -359,11 +359,9 @@ sockServer.on('error', err => {
 
 process.on('SIGTERM', () => {
   try { sockServer.close(); } catch (_) {}
-  try { fs.unlinkSync(APP_SOCK); } catch (_) {}
   process.exit(0);
 });
 process.on('SIGINT', () => {
   try { sockServer.close(); } catch (_) {}
-  try { fs.unlinkSync(APP_SOCK); } catch (_) {}
   process.exit(0);
 });
