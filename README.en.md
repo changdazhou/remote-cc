@@ -154,6 +154,12 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 ## Changelog
 
+### 2026-09-23
+
+- **Usability fixes**: corrected session rename (Esc no longer saves, Enter no longer double-fires, edit auto-focuses), stale resume-history list, file browser single-click navigation and preview race, silent partial upload failures, and extensionless text files being misdetected as binary / UTF-8 truncation garbling
+- **Connection stability**: input is no longer silently dropped during WebSocket reconnect (buffered and replayed); the shared terminal periodically retries upgrading back to WebSocket after an HTTP fallback; the settings-page reconnect delay / keep-alive controls now actually take effect
+- **Mobile & settings**: fixed output freeze after leaving copy mode, Enter not sending on Android, non-live scrollback changes; added a ≥8-character check when changing the password
+
 ### 2026-07-01
 
 - **Agent terminal copy and paste**: fixes PC selection coordinate drift; `Ctrl/Cmd+C` copies when text is selected and keeps interrupt behavior when nothing is selected; `Ctrl/Cmd+V` now uses the browser clipboard path to avoid Windows/X11 server-side clipboard failures
