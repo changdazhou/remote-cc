@@ -39,7 +39,7 @@
           <AppIcon v-else name="folder-plus" />
         </button>
       </div>
-      <button class="dp-select" @click="selectPath(currentPath)">选择当前</button>
+      <button class="dp-select" @click="selectPath(selectedPath || currentPath)">选择当前</button>
       <button class="dp-close" title="关闭" @click="$emit('cancel')"><AppIcon name="close" /></button>
     </div>
 

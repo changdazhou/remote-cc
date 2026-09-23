@@ -1,6 +1,7 @@
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
+const { StringDecoder } = require('string_decoder');
 
 // ── 安全根目录白名单 ──────────────────────────────────────────────────────────
 const DEFAULT_ROOTS = [path.parse(os.homedir()).root];
@@ -52,12 +53,49 @@ const IMAGE_EXTS = new Set([
 // SVG 作为文本而非图片（可直接阅读源码）
 const SVG_EXT = '.svg';
 
-function getFileKind(ext) {
-  const e = ext.toLowerCase();
+// 常见无扩展名文本文件（按小写 basename 匹配）
+const TEXT_FILENAMES = new Set([
+  'dockerfile', 'makefile', 'license', 'licence', 'readme', 'changelog',
+  'authors', 'notice', 'copying', 'install', 'contributing', 'codeowners',
+  '.gitignore', '.gitattributes', '.dockerignore', '.npmignore', '.npmrc',
+  '.editorconfig', '.env', '.bashrc', '.zshrc', '.profile', '.bash_profile',
+  '.vimrc', '.inputrc', '.prettierrc', '.eslintrc', '.babelrc',
+]);
+
+function getFileKind(ext, name) {
+  const e = (ext || '').toLowerCase();
   if (e === SVG_EXT) return 'text';
   if (TEXT_EXTS.has(e))  return 'text';
   if (IMAGE_EXTS.has(e)) return 'image';
+  const base = (name || '').toLowerCase();
+  if (base && TEXT_FILENAMES.has(base)) return 'text';
   return 'unsupported';
+}
+
+// 无扩展名文件的文本嗅探：读取前缀，无 NUL 且控制字符占比低则视为文本
+function looksLikeText(buf) {
+  if (!buf.length) return true;
+  let suspicious = 0;
+  for (let i = 0; i < buf.length; i++) {
+    const c = buf[i];
+    if (c === 0) return false; // NUL 字节 → 判定为二进制
+    if (c < 9 || (c > 13 && c < 32)) suspicious++;
+  }
+  return suspicious / buf.length < 0.1;
+}
+
+function sniffTextFile(safePath, size) {
+  try {
+    const sniffLen = Math.min(size, 4096);
+    if (sniffLen === 0) return true;
+    const fd = fs.openSync(safePath, 'r');
+    const buf = Buffer.allocUnsafe(sniffLen);
+    const n = fs.readSync(fd, buf, 0, sniffLen, 0);
+    fs.closeSync(fd);
+    return looksLikeText(buf.slice(0, n));
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
@@ -116,8 +154,14 @@ function readFilePreview(reqPath, maxBytes = TEXT_MAX_BYTES) {
   if (stat.isDirectory()) throw new Error('Is a directory');
 
   const ext  = path.extname(safePath).toLowerCase();
-  const kind = getFileKind(ext);
+  const base = path.basename(safePath);
+  let kind = getFileKind(ext, base);
   const size = stat.size;
+
+  // 无扩展名且未识别的文件：嗅探内容，判定为文本可预览（Dockerfile / Makefile / LICENSE 等）
+  if (kind === 'unsupported' && ext === '' && sniffTextFile(safePath, size)) {
+    kind = 'text';
+  }
 
   if (kind === 'unsupported') {
     return { path: safePath, type: 'unsupported', size };
@@ -152,7 +196,12 @@ function readFilePreview(reqPath, maxBytes = TEXT_MAX_BYTES) {
   fs.closeSync(fd);
 
   const truncated = bytesRead > limit;
-  const content   = buf.slice(0, truncated ? limit : bytesRead).toString('utf8');
+  const slice = buf.slice(0, truncated ? limit : bytesRead);
+  // 用 StringDecoder 解码，避免在多字节 UTF-8 序列中间截断导致末尾乱码
+  const decoder = new StringDecoder('utf8');
+  let content = decoder.write(slice);
+  // 完整读取时补齐尾部；截断时丢弃不完整的尾部字节序列
+  if (!truncated) content += decoder.end();
 
   return { path: safePath, type: 'text', content, truncated, size };
 }

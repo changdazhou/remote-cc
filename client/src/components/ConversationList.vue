@@ -49,10 +49,10 @@
               class="cl-name-input"
               v-model="editVal"
               @keyup.enter="commitEdit(s)"
-              @keyup.escape="editingId = null"
+              @keyup.escape="cancelEdit"
               @blur="commitEdit(s)"
               @click.stop
-              ref="editRef"
+              :ref="setEditRef"
             />
           </div>
           <!-- Meta row -->
@@ -111,20 +111,30 @@ const emit = defineEmits(['open', 'new', 'kill', 'delete', 'rename', 'log']);
 
 const editingId = ref(null);
 const editVal   = ref('');
-const editRef   = ref(null);
+const editEl    = ref(null);
 
 const confirm = reactive({ show: false, msg: '', ok: '', fn: null });
 
+function setEditRef(el) {
+  editEl.value = el;
+}
 function startEdit(s) {
   editingId.value = s.sessionId;
   editVal.value   = s.name;
-  nextTick(() => editRef.value?.focus());
+  nextTick(() => editEl.value?.focus());
+}
+function cancelEdit() {
+  editingId.value = null;
 }
 function commitEdit(s) {
-  if (editVal.value.trim() && editVal.value !== s.name) {
-    emit('rename', { sessionId: s.sessionId, name: editVal.value.trim() });
-  }
+  // Guard against double-commit: Enter/blur or Escape/blur both fire commitEdit,
+  // and the blur is triggered by removing the focused input from the DOM.
+  if (editingId.value !== s.sessionId) return;
   editingId.value = null;
+  const next = editVal.value.trim();
+  if (next && next !== s.name) {
+    emit('rename', { sessionId: s.sessionId, name: next });
+  }
 }
 
 function confirmKill(s) {

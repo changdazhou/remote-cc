@@ -476,7 +476,7 @@ function connectEntryWS(entry) {
   if (entry._destroy) { entry._destroy(); entry._destroy = null; }
 
   let destroyed = false;
-  let reconnDelay = 1000;
+  let reconnDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
   let reconnTimeout = null;
   let fallbackTimer = null;
   let heartbeatTimer = null;
@@ -530,6 +530,7 @@ function connectEntryWS(entry) {
   function startHeartbeat() {
     clearInterval(heartbeatTimer);
     clearTimeout(heartbeatTimeout);
+    if (settings.wsKeepAlive === false) return;
     heartbeatTimer = setInterval(() => {
       if (destroyed || ws.readyState !== WebSocket.OPEN) return;
       try {
@@ -546,7 +547,7 @@ function connectEntryWS(entry) {
   ws.onopen = () => {
     opened = true;
     clearTimeout(fallbackTimer);
-    reconnDelay = 1000;
+    reconnDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
     markEntryConnected(entry, 'ws', { refresh: false });
 
     // nextTick 确保 Terminal 组件已 mount 并完成初始 fit
@@ -577,6 +578,9 @@ function connectEntryWS(entry) {
           cols, rows,
         }));
       }
+
+      // 回放重连窗口内缓冲的用户输入
+      flushPendingInputWS(entry, ws);
     });
   };
 
@@ -678,7 +682,8 @@ function connectEntryWS(entry) {
     entry.connectionStatus = 'connecting';
     reconnTimeout = setTimeout(() => {
       if (destroyed) return;
-      reconnDelay = Math.min(reconnDelay * 1.5, 15000);
+      const maxDelay = Math.max(reconnDelay, Number(settings.maxReconnectDelay) || 15000);
+      reconnDelay = Math.min(reconnDelay * 1.5, maxDelay);
       connectEntryWS(entry);
     }, reconnDelay);
   };
@@ -728,6 +733,7 @@ function handleEntryExit(entry, exitCode) {
   entry.alive = false;
   entry.connectionStatus = 'closed';
   entry.connectedBadgeVisible = false;
+  clearPendingInput(entry);
   clearEntryConnectionBadge(entry);
   setTimeout(() => {
     const sid = entry.sid;
@@ -750,8 +756,8 @@ async function startEntryHttp(entry) {
   if (entry._destroy) { entry._destroy(); entry._destroy = null; }
 
   let destroyed = false;
-  let retryDelay = 1000;
-  let openRetryDelay = 1000;
+  let retryDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
+  let openRetryDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
   let pollController = null;
   entry.transport = 'http';
   entry.connectionStatus = 'connecting';
@@ -768,7 +774,7 @@ async function startEntryHttp(entry) {
           signal: pollController?.signal,
         });
         if (pollController?.signal.aborted) continue;
-        retryDelay = 1000;
+        retryDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
         if (destroyed) return;
         markEntryConnected(entry, 'http', {
           refresh: Boolean(result.reset || result.output || entry._reconnectNoticePending),
@@ -786,7 +792,7 @@ async function startEntryHttp(entry) {
         markEntryDisconnected(entry);
         entry.connectionStatus = 'connecting';
         await new Promise(resolve => setTimeout(resolve, retryDelay));
-        retryDelay = Math.min(retryDelay * 1.5, 15000);
+        retryDelay = Math.min(retryDelay * 1.5, Math.max(retryDelay, Number(settings.maxReconnectDelay) || 15000));
       } finally {
         pollController = null;
       }
@@ -818,6 +824,7 @@ async function startEntryHttp(entry) {
           });
       if (destroyed) return;
       applyHttpSessionSnapshot(entry, snapshot, !!entry.attachSessionId);
+      flushPendingInputHttp(entry);
       poll(snapshot.cursor ?? 0);
       return;
     } catch (_) {
@@ -825,7 +832,7 @@ async function startEntryHttp(entry) {
       markEntryDisconnected(entry);
       entry.connectionStatus = 'connecting';
       await new Promise(resolve => setTimeout(resolve, openRetryDelay));
-      openRetryDelay = Math.min(openRetryDelay * 1.5, 15000);
+      openRetryDelay = Math.min(openRetryDelay * 1.5, Math.max(openRetryDelay, Number(settings.maxReconnectDelay) || 15000));
     }
   }
 }
@@ -1112,23 +1119,69 @@ function queueSettingsSave() {
 watch(settings, queueSettingsSave, { deep: true });
 
 // Terminal event handlers
+const MAX_PENDING_INPUT = 64 * 1024; // 重连窗口内最多缓冲的输入字节数
+
+function bufferPendingInput(entry, data) {
+  if (!entry._pendingInput) entry._pendingInput = [];
+  const total = entry._pendingInputLen || 0;
+  if (total + data.length > MAX_PENDING_INPUT) return false;
+  entry._pendingInput.push(data);
+  entry._pendingInputLen = total + data.length;
+  return true;
+}
+
+function flushPendingInputWS(entry, ws) {
+  const pending = entry._pendingInput;
+  if (!pending || !pending.length) return;
+  entry._pendingInput = [];
+  entry._pendingInputLen = 0;
+  if (ws?.readyState !== WebSocket.OPEN) return;
+  for (const chunk of pending) {
+    try { ws.send(chunk); } catch (_) { return; }
+  }
+}
+
+function flushPendingInputHttp(entry) {
+  const pending = entry._pendingInput;
+  if (!pending || !pending.length) return;
+  entry._pendingInput = [];
+  entry._pendingInputLen = 0;
+  const el = termRefs[entry.sid];
+  api.terminal.input(entry.attachSessionId || entry.sid, {
+    data: pending.join(''),
+    cols: el?.getCols?.() ?? 80,
+    rows: el?.getRows?.() ?? 24,
+  }).catch(() => {});
+}
+
+function clearPendingInput(entry) {
+  entry._pendingInput = null;
+  entry._pendingInputLen = 0;
+}
+
 function onTermInput(sid, data) {
   const entry = findEntry(sid);
+  const el = termRefs[sid];
+  let delivered = false;
   if (entry?.ws?.readyState === WebSocket.OPEN) {
     entry.ws.send(data);
+    delivered = true;
   } else if (entry?.transport === 'http') {
-    const el = termRefs[sid];
     interruptEntryHttpPoll(entry);
     api.terminal.input(entry.attachSessionId || entry.sid, {
       data,
       cols: el?.getCols?.() ?? 80,
       rows: el?.getRows?.() ?? 24,
     }).catch(() => {});
+    delivered = true;
+  } else if (entry && entry.connectionStatus !== 'closed') {
+    // WS 重连窗口：缓冲按键，待连接恢复后回放，避免静默丢字
+    delivered = bufferPendingInput(entry, data);
   }
   // 同步更新当前行追踪（键盘输入已由 terminal 内部 onData 处理，
   // 但 SymbolBar 的输入绕过了 onData，所以这里统一补充）
-  const el = termRefs[sid];
-  if (el?.trackInput) el.trackInput(data);
+  // 仅在输入实际投递或已缓冲时推进追踪，丢弃的输入不推进
+  if (delivered && el?.trackInput) el.trackInput(data);
 }
 function onTermResize(sid, { cols, rows }) {
   const entry = findEntry(sid);
@@ -1150,6 +1203,8 @@ function onTermPaste(sid, text) {
       cols: el?.getCols?.() ?? 80,
       rows: el?.getRows?.() ?? 24,
     }).catch(() => {});
+  } else if (entry && entry.connectionStatus !== 'closed') {
+    bufferPendingInput(entry, text);
   }
 }
 
@@ -1174,6 +1229,9 @@ function sendToActiveTerminal(text) {
       cols: el?.getCols?.() ?? 80,
       rows: el?.getRows?.() ?? 24,
     }).catch(() => {});
+    view.value = 'terminal';
+  } else if (entry && entry.connectionStatus !== 'closed') {
+    bufferPendingInput(entry, text);
     view.value = 'terminal';
   }
 }

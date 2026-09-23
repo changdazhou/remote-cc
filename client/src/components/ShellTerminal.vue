@@ -43,10 +43,14 @@ let heartbeatTimeout = null;
 let httpRun = 0;
 let connectedBadgeTimer = null;
 let replayingOutput = false;
+let wsUpgradeTimer = null;
 const WS_FALLBACK_DELAY = 3000;
 const WS_HEARTBEAT_INTERVAL = 25000;
 const WS_HEARTBEAT_TIMEOUT = 8000;
 const HTTP_POLL_WAIT = 5000;
+const WS_UPGRADE_MIN = 30000;
+const WS_UPGRADE_MAX = 300000;
+let wsUpgradeDelay = WS_UPGRADE_MIN;
 let hasConnected = false;
 let reconnectNoticePending = false;
 
@@ -65,9 +69,23 @@ function clearTimers() {
   clearInterval(heartbeatTimer);
   clearTimeout(heartbeatTimeout);
   clearTimeout(connectedBadgeTimer);
+  clearTimeout(wsUpgradeTimer);
   heartbeatTimer = null;
   heartbeatTimeout = null;
   connectedBadgeTimer = null;
+  wsUpgradeTimer = null;
+}
+
+// HTTP 回退后周期性尝试重新升级到 WS，避免一次 WS 断开后永久停留在长轮询。
+// 失败会自动回落 HTTP 并按指数退避重排，成功则重置退避。
+function scheduleWsUpgrade() {
+  clearTimeout(wsUpgradeTimer);
+  wsUpgradeTimer = setTimeout(() => {
+    wsUpgradeTimer = null;
+    if (closing || transport.value !== 'http') return;
+    wsUpgradeDelay = Math.min(wsUpgradeDelay * 2, WS_UPGRADE_MAX);
+    start();
+  }, wsUpgradeDelay);
 }
 
 function markHeartbeatAlive() {
@@ -102,6 +120,11 @@ function markConnected(nextTransport, { refresh = true } = {}) {
   status.value = 'connected';
   hasConnected = true;
   reconnectNoticePending = false;
+  if (nextTransport === 'ws') {
+    wsUpgradeDelay = WS_UPGRADE_MIN;
+    clearTimeout(wsUpgradeTimer);
+    wsUpgradeTimer = null;
+  }
   if (shouldShowBadge) {
     connectedBadgeVisible.value = true;
     clearTimeout(connectedBadgeTimer);
@@ -317,6 +340,7 @@ async function startHttp() {
     if (run !== httpRun || closing) return;
     applyHttpSnapshot(snapshot, true);
     pollHttp(run, snapshot.cursor ?? 0);
+    scheduleWsUpgrade();
   } catch (e) {
     if (run !== httpRun || closing) return;
     status.value = 'error';

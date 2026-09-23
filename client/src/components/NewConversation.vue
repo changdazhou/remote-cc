@@ -3,7 +3,7 @@
     <!-- Tab switcher -->
     <div class="nc-tabs">
       <button :class="['nc-tab', { active: tab === 'new' }]" @click="tab = 'new'">{{ t.new_tab }}</button>
-      <button :class="['nc-tab', { active: tab === 'resume' }]" @click="tab = 'resume'; loadHistory()">{{ t.resume_tab }}</button>
+      <button :class="['nc-tab', { active: tab === 'resume' }]" @click="openResume">{{ t.resume_tab }}</button>
     </div>
 
     <!-- ── New conversation ────────────────────────────────── -->
@@ -82,6 +82,9 @@
           <span v-if="!availableAgents.length" class="nc-status-inline">
             {{ agentLoading ? t.agent_checking : t.no_agents_available }}
           </span>
+          <button class="nc-refresh-btn" :title="t.log_refresh" :disabled="histLoading" @click="loadHistory(true)">
+            <AppIcon name="refresh" :spin="histLoading" />
+          </button>
         </div>
       </div>
       <div v-if="histLoading" class="nc-status">{{ t.loading_hist }}</div>
@@ -257,18 +260,14 @@ let histLoaded = false;
 function setAgent(nextAgent) {
   if (agent.value === nextAgent) return;
   agent.value = nextAgent;
-  projects.value = [];
-  expanded.clear();
-  loadingProj.clear();
-  for (const key of Object.keys(projSessions)) delete projSessions[key];
-  selectedSess.value = null;
-  selectedProj.value = null;
-  histLoaded = false;
+  resetHistoryState();
   if (tab.value === 'resume') loadHistory();
 }
 
-async function loadHistory() {
-  if (histLoaded) return;
+async function loadHistory(force = false) {
+  if (histLoaded && !force) return;
+  if (histLoading.value) return;
+  if (force) resetHistoryState();
   histLoading.value = true;
   histError.value = '';
   try {
@@ -281,6 +280,21 @@ async function loadHistory() {
   } finally {
     histLoading.value = false;
   }
+}
+
+function resetHistoryState() {
+  projects.value = [];
+  expanded.clear();
+  loadingProj.clear();
+  for (const key of Object.keys(projSessions)) delete projSessions[key];
+  selectedSess.value = null;
+  selectedProj.value = null;
+  histLoaded = false;
+}
+
+function openResume() {
+  tab.value = 'resume';
+  loadHistory();
 }
 
 async function toggleProj(id) {
@@ -489,6 +503,22 @@ function fmtDate(iso) {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 11px;
 }
+.nc-refresh-btn {
+  margin-left: auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; flex-shrink: 0;
+  background: color-mix(in srgb, var(--panel2) 76%, transparent);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--neon2); cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+  line-height: 1; overflow: visible; --app-icon-size: 15px;
+}
+.nc-refresh-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--neon) 8%, transparent);
+  border-color: color-mix(in srgb, var(--neon) 30%, transparent);
+  color: var(--neon);
+}
+.nc-refresh-btn:disabled { opacity: .5; cursor: default; }
 .nc-pick {
   background: color-mix(in srgb, var(--panel2) 76%, transparent); border: 1px solid var(--border);
   border-radius: var(--radius-sm); color: var(--neon2); font-family: 'JetBrains Mono', monospace;

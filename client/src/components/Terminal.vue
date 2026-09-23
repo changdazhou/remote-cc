@@ -756,6 +756,7 @@ onMounted(() => {
     if (term) term.options.fontFamily = f.value;
     fitAddon?.fit();
   });
+  watch(() => settings.scrollback,   v => { if (term) term.options.scrollback = v; });
 
   resizeObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
@@ -912,9 +913,15 @@ function emitMobileInput(data) {
 
 function onMobileInput(e) {
   if (mobileInputComposing) return;
-  const value = e.target.value;
-  if (value) emitMobileInput(value);
+  let value = e.target.value;
   e.target.value = '';
+  if (!value) return;
+  // Android（keyCode 229 / Unidentified）下 Enter 可能以 '\n' 走 input 事件而非 keydown，
+  // 按当前回车模式归一化为 '\r'，避免"回车不发送"
+  if (mobileEnterSends.value && value.includes('\n')) {
+    value = value.replace(/\n/g, '\r');
+  }
+  emitMobileInput(value);
 }
 
 function onMobileCompositionStart() {
@@ -1018,6 +1025,10 @@ function closeMobileCopyMode() {
     userScrolled = false;
     flushPending();
     scrollToBottomSoon();
+  } else {
+    // 复制模式期间强制置了 userScrolled=true；退出时安排一次兜底恢复，
+    // 避免在滚动位置未回到底部时输出被永久冻结（假死）
+    scheduleScrollResume();
   }
   nextTick(() => blurTerminalInputs());
 }

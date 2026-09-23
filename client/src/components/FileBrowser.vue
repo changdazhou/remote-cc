@@ -70,13 +70,13 @@
       <div class="fb-list-panel">
         <div v-if="loading" class="fb-status">加载中…</div>
         <div v-else-if="error" class="fb-status fb-status-err">{{ error }}</div>
-        <div v-else-if="!entries.length && !parentPath" class="fb-status">目录为空</div>
         <div v-else class="fb-entries">
           <!-- 向上一级 -->
           <div v-if="parentPath" class="fb-entry fb-dir" @click="navigateTo(parentPath)">
             <span class="fb-icon fb-icon-dir"><AppIcon name="parent" /></span>
             <span class="fb-name">..</span>
           </div>
+          <div v-if="!entries.length" class="fb-status">目录为空</div>
           <!-- 条目 -->
           <div
             v-for="entry in entries"
@@ -298,30 +298,33 @@ function navigateTo(p) {
 
 // ── 条目交互 ──────────────────────────────────────────────────────────────────
 function selectEntry(entry) {
+  if (entry.type === 'dir') {
+    // 单击/单击进入目录，移动端无需双击（双击在触屏上常被吞掉）
+    navigateTo(fullPath(entry));
+    return;
+  }
   selectedEntry.value = entry;
-  if (entry.type === 'file') loadPreview(entry);
-  else preview.show = false;
+  loadPreview(entry);
 }
 
 function onDblClick(entry) {
-  if (entry.type === 'dir') {
-    navigateTo(fullPath(entry));
+  if (entry.type === 'dir') return; // 目录已在单击时进入
+  // 文件双击：已有预览则直接全屏，否则先加载再全屏
+  if (preview.show && selectedEntry.value?.name === entry.name && !preview.loading) {
+    fullscreen.value = true;
   } else {
-    // 文件双击：已有预览则直接全屏，否则先加载再全屏
-    if (preview.show && selectedEntry.value?.name === entry.name && !preview.loading) {
-      fullscreen.value = true;
-    } else {
-      selectEntry(entry);
-      // 等加载完成后自动全屏
-      const stop = watch(() => preview.loading, (loading) => {
-        if (!loading) { fullscreen.value = true; stop(); }
-      });
-    }
+    selectEntry(entry);
+    // 等加载完成后自动全屏
+    const stop = watch(() => preview.loading, (loading) => {
+      if (!loading) { fullscreen.value = true; stop(); }
+    });
   }
 }
 
+let previewToken = 0;
 async function loadPreview(entry) {
   const fp = fullPath(entry);
+  const token = ++previewToken;
   preview.show    = true;
   preview.loading = true;
   preview.content = '';
@@ -331,15 +334,17 @@ async function loadPreview(entry) {
   preview.size    = entry.size ?? 0;
   try {
     const res = await api.fs.read(fp);
+    if (token !== previewToken) return; // 已有更新的预览请求，丢弃过期结果
     preview.type      = res.type;
     preview.content   = res.content   || '';
     preview.dataUrl   = res.dataUrl   || '';
     preview.truncated = res.truncated || false;
     preview.size      = res.size ?? entry.size ?? 0;
   } catch (_) {
+    if (token !== previewToken) return;
     preview.type = 'unsupported';
   } finally {
-    preview.loading = false;
+    if (token === previewToken) preview.loading = false;
   }
 }
 
@@ -448,14 +453,27 @@ async function onDropUpload(e) {
 async function uploadFiles(files) {
   if (!files.length) return;
   uploading.value = true;
+  let ok = 0;
+  const failed = [];
   try {
-    for (const file of files) await api.fs.upload(currentPath.value || '/', file);
-    showToast(`已上传 ${files.length} 个文件`);
-    await loadDir(currentPath.value || '/');
-  } catch (err) {
-    showToast(`上传失败: ${err.message || err}`);
+    for (const file of files) {
+      try {
+        await api.fs.upload(currentPath.value || '/', file);
+        ok++;
+      } catch (err) {
+        failed.push(file.name);
+      }
+    }
   } finally {
     uploading.value = false;
+    await loadDir(currentPath.value || '/');
+  }
+  if (!failed.length) {
+    showToast(`已上传 ${ok} 个文件`);
+  } else if (ok) {
+    showToast(`已上传 ${ok} 个，失败 ${failed.length} 个`);
+  } else {
+    showToast(`上传失败: ${failed.join(', ')}`);
   }
 }
 
@@ -770,7 +788,7 @@ watch(() => props.initialPath, (newPath) => {
   background: color-mix(in srgb, var(--panel) 78%, transparent); flex-shrink: 0;
 }
 .fb-line-nums span {
-  font-size: 11px; line-height: 1.65;
+  font-size: 11px; line-height: 20px;
   color: var(--muted); opacity: .5;
   font-family: 'JetBrains Mono', monospace;
 }
@@ -778,7 +796,7 @@ watch(() => props.initialPath, (newPath) => {
   flex: 1; margin: 0; padding: 14px 16px;
   white-space: pre; overflow-x: auto;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px; line-height: 1.68; color: var(--text); tab-size: 2;
+  font-size: 12px; line-height: 20px; color: var(--text); tab-size: 2;
 }
 
 .fb-preview-img {

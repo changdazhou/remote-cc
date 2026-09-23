@@ -14,6 +14,7 @@ const CODEX_HOME_DIRS = uniquePaths([
 const CODEX_HISTORY_CACHE_TTL_MS = positiveInt(process.env.RCC_HISTORY_CACHE_TTL_MS, 15000);
 const CODEX_SESSION_META_BYTES = positiveInt(process.env.RCC_CODEX_SESSION_META_BYTES, 64 * 1024);
 const CODEX_SESSION_META_LINES = 20;
+const CLAUDE_SESSION_META_BYTES = positiveInt(process.env.RCC_CLAUDE_SESSION_META_BYTES, 256 * 1024);
 
 let codexSessionsCache = { sessions: null, expiresAt: 0 };
 
@@ -56,15 +57,16 @@ function getClaudeProjects() {
 
   const projects = [];
   for (const dir of dirs) {
-    const sessions = getSessions(dir);
-    if (sessions.length === 0) continue;
-    // cwd 从最新 session 的第一条消息中读取
-    const latestSession = sessions[0];
+    const files = listClaudeSessionFiles(dir);
+    if (files.length === 0) continue;
+    // 只读最新 session 的头部前缀解析 cwd，避免全量读取整个历史目录
+    const latest = files[0];
+    const cwd = readClaudeSessionMeta(latest.filePath, latest.mtime).cwd;
     projects.push({
       id: dir,
-      displayPath: latestSession.cwd || dir,
-      sessionCount: sessions.length,
-      lastModified: sessions[0].lastModified,
+      displayPath: cwd || dir,
+      sessionCount: files.length,
+      lastModified: latest.mtime.toISOString(),
     });
   }
   return projects.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
@@ -74,10 +76,10 @@ function getSessions(projectId, agent = 'claude') {
   return normalizeAgent(agent) === 'codex' ? getCodexSessions(projectId) : getClaudeSessions(projectId);
 }
 
-function getClaudeSessions(projectId) {
+function listClaudeSessionFiles(projectId) {
   const dir = path.join(CLAUDE_PROJECTS_DIR, projectId);
   if (!fs.existsSync(dir)) return [];
-  const files = fs.readdirSync(dir)
+  return fs.readdirSync(dir)
     .filter(f => f.endsWith('.jsonl'))
     .map(f => {
       const filePath = path.join(dir, f);
@@ -85,10 +87,12 @@ function getClaudeSessions(projectId) {
       return { file: f, filePath, mtime: stat.mtime };
     })
     .sort((a, b) => b.mtime - a.mtime);
+}
 
-  return files.map(({ file, filePath, mtime }) => {
+function getClaudeSessions(projectId) {
+  return listClaudeSessionFiles(projectId).map(({ file, filePath, mtime }) => {
     const sessionId = file.replace('.jsonl', '');
-    const preview = readSessionPreview(filePath);
+    const preview = readClaudeSessionMeta(filePath, mtime);
     return {
       sessionId,
       projectId,
@@ -100,38 +104,39 @@ function getClaudeSessions(projectId) {
   });
 }
 
-function readSessionPreview(filePath) {
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    let lastMessage = '';
-    let messageCount = 0;
-    let cwd = '';
+function readClaudeSessionMeta(filePath, mtime) {
+  const prefix = readFilePrefix(filePath, CLAUDE_SESSION_META_BYTES);
+  // 若一次前缀读取已覆盖整个文件，则可信为完整消息数
+  let fileSize = 0;
+  try { fileSize = fs.statSync(filePath).size; } catch (_) {}
+  const complete = fileSize > 0 && fileSize <= CLAUDE_SESSION_META_BYTES;
+  const lines = prefix.split('\n');
+  // 最后一行可能被截断，若未覆盖整个文件则丢弃
+  if (!complete && lines.length) lines.pop();
 
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line);
-        if (obj.cwd && !cwd) cwd = obj.cwd;
-        if (obj.type === 'user' || obj.type === 'assistant') {
-          messageCount++;
-          // 取最后一条用户消息作为预览
-          if (obj.type === 'user') {
-            const msg = obj.message;
-            if (msg && msg.content) {
-              if (typeof msg.content === 'string') lastMessage = msg.content.slice(0, 100);
-              else if (Array.isArray(msg.content)) {
-                const textPart = msg.content.find(p => p.type === 'text');
-                if (textPart) lastMessage = textPart.text.slice(0, 100);
-              }
-            }
+  let lastMessage = '';
+  let messageCount = 0;
+  let cwd = '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch (_) { continue; }
+    if (obj.cwd && !cwd) cwd = obj.cwd;
+    if (obj.type === 'user' || obj.type === 'assistant') {
+      messageCount++;
+      if (obj.type === 'user') {
+        const msg = obj.message;
+        if (msg && msg.content) {
+          if (typeof msg.content === 'string') lastMessage = msg.content.slice(0, 100);
+          else if (Array.isArray(msg.content)) {
+            const textPart = msg.content.find(p => p.type === 'text');
+            if (textPart && textPart.text) lastMessage = textPart.text.slice(0, 100);
           }
         }
-      } catch (_) {}
+      }
     }
-    return { lastMessage, messageCount, cwd };
-  } catch (_) {
-    return { lastMessage: '', messageCount: 0, cwd: '' };
   }
+  return { lastMessage, messageCount, cwd, complete };
 }
 
 function readSession(sessionId, agent = 'claude') {
@@ -296,7 +301,6 @@ function readCodexSessionFile(filePath) {
   for (const line of lines) {
     if (!line.trim()) continue;
     applyCodexSessionLine(session, line);
-    if (session.sessionId && session.cwd) break;
   }
 
   return session.sessionId ? session : null;
@@ -339,9 +343,12 @@ function applyCodexSessionLine(session, line) {
     session.cwd = obj.payload.cwd;
   }
 
-  if (obj.type === 'response_item' && obj.payload?.type === 'message' && obj.payload.role === 'user') {
-    const text = extractCodexMessageText(obj.payload.content);
-    if (text && !isEnvironmentContext(text)) session.lastMessage = text.slice(0, 100);
+  if (obj.type === 'response_item' && obj.payload?.type === 'message') {
+    session.messageCount = (session.messageCount || 0) + 1;
+    if (obj.payload.role === 'user') {
+      const text = extractCodexMessageText(obj.payload.content);
+      if (text && !isEnvironmentContext(text)) session.lastMessage = text.slice(0, 100);
+    }
   }
 }
 

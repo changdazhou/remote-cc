@@ -396,7 +396,7 @@ let agentTimer = null;
 let agentRefreshTimer = null;
 
 const passwordCanSubmit = computed(() =>
-  Boolean(passwordForm.current && passwordForm.next && passwordForm.confirm && passwordForm.next === passwordForm.confirm)
+  Boolean(passwordForm.current && passwordForm.next.length >= 8 && passwordForm.confirm && passwordForm.next === passwordForm.confirm)
 );
 
 const LANGUAGES = [
@@ -488,6 +488,10 @@ async function changePassword() {
   }
   if (passwordForm.next !== passwordForm.confirm) {
     passwordError.value = t.value.password_mismatch;
+    return;
+  }
+  if (passwordForm.next.length < 8) {
+    passwordError.value = t.value.password_too_short;
     return;
   }
   changingPassword.value = true;
