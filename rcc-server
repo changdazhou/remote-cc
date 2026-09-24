@@ -112,6 +112,14 @@ do_start() {
 
   echo "Starting on port $PORT..."
 
+  # 从 Agent 会话内启动时，不把该会话的运行时标记带进服务
+  unset NO_COLOR AI_AGENT CLAUDECODE CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION \
+    CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN \
+    CODEX_CI CODEX_THREAD_ID CODEX_MANAGED_BY_NPM CODEX_MANAGED_PACKAGE_ROOT
+  [[ "${GIT_EDITOR:-}" == "true" ]] && unset GIT_EDITOR
+  [[ "${GIT_PAGER:-}" == "cat" ]] && unset GIT_PAGER
+  [[ "${GH_PAGER:-}" == "cat" ]] && unset GH_PAGER
+
   # Watchdog loop 独立于当前 shell，避免远程执行器关闭父进程时带走服务。
   if command -v setsid >/dev/null 2>&1; then
     setsid "$RCC_DIR/rcc-server" _watchdog >> "$LOG_FILE" 2>&1 &

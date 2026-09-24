@@ -973,14 +973,14 @@ onMounted(() => {
   });
 
   // 实时响应 settings 变化
-  watch(() => settings.fontSize,    v => { if (term) term.options.fontSize    = v; fitAddon?.fit(); });
-  watch(() => settings.lineHeight,   v => { if (term) term.options.lineHeight  = v; fitAddon?.fit(); });
+  watch(() => settings.fontSize,    v => { if (term) term.options.fontSize    = v; fitAndSync(); });
+  watch(() => settings.lineHeight,   v => { if (term) term.options.lineHeight  = v; fitAndSync(); });
   watch(() => settings.cursorBlink,  v => { if (term) term.options.cursorBlink = v; });
   watch(() => settings.cursorStyle,  v => { if (term) term.options.cursorStyle = v; });
   watch(() => settings.fontFamily,   v => {
     const f = FONT_FAMILIES.find(f => f.id === v) || FONT_FAMILIES[0];
     if (term) term.options.fontFamily = f.value;
-    fitAddon?.fit();
+    fitAndSync();
   });
   watch(() => settings.scrollback,   v => { if (term) term.options.scrollback = v; });
 
@@ -1059,14 +1059,20 @@ function scheduleFontRemeasure() {
 function remeasureFont({ forceResize = false } = {}) {
   if (!term || !lastW || !lastH) return;
   const family = term.options.fontFamily;
-  const { cols, rows } = term;
   term.options.fontFamily = 'monospace';
   term.options.fontFamily = family;
-  fitAddon?.fit();
-  if (forceResize || term.cols !== cols || term.rows !== rows) {
+  fitAndSync({ force: forceResize });
+  if (!userScrolled && !mobileCopyMode.value) scrollToBottomSoon();
+}
+
+// 列数变化必须同步给 PTY，否则程序按旧宽度排版，超出的字符在右侧被裁掉
+function fitAndSync({ force = false } = {}) {
+  if (!term || !fitAddon) return;
+  const { cols, rows } = term;
+  fitAddon.fit();
+  if (force || term.cols !== cols || term.rows !== rows) {
     emit('resize', { cols: term.cols, rows: term.rows });
   }
-  if (!userScrolled && !mobileCopyMode.value) scrollToBottomSoon();
 }
 
 function write(data, options = {}) { smartWrite(data, options); }

@@ -157,27 +157,29 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 ### 2026-09-24
 
-- **Terminal rendering**: switched to the WebGL renderer so selections line up exactly with text and no longer cover the first character; glyph widths are re-measured after web fonts load or when a terminal becomes visible; falls back automatically when WebGL is unavailable
-- **Scrolling**: scrolling up to read history is no longer pulled back by new output, and the view returns to the bottom after 10 seconds of inactivity; new "jump to bottom / new output" button; wheel animation removed and touch scrolling gains momentum
-- **Terminal colors**: color queries from agents (OSC 10/11, etc.) are answered so they pick colors matching the current theme; no duplicate replies during replay or with multiple devices attached
-- **Uploads**: live progress, speed and ETA, cancellable; 10 GB per-file limit and an early insufficient-disk-space error
-- **Agent commands**: status always shows the resolved absolute executable path; preferred commands (`RCC_<AGENT>_PREFERRED`) and `CODEX_HOME` can be set per machine in `~/.rcc/agent.env`
+- **Terminal rendering**: WebGL renderer with selections aligned to text; font or size changes re-measure and resync columns, so the right edge is no longer cut off on desktop
+- **Scrolling**: reading history is no longer pulled back by new output, and the view returns to the bottom after 10 s idle; new "jump to bottom" button; touch scrolling gains momentum
+- **Colors**: agent color queries are answered so colors follow the theme; when the service is started from inside an agent session, new sessions no longer inherit its color-disabling settings
+- **Uploads**: live progress, speed and ETA, cancellable; 10 GB per-file limit
+- **Agent commands**: status shows the full executable path; preferred commands and `CODEX_HOME` can be set in `~/.rcc/agent.env`
 
 ### 2026-09-23
 
-- **Large uploads/downloads no longer hang**: transfers are streamed on the server and the browser sends files directly instead of loading them into memory; uploads show live progress, speed and ETA, can be cancelled, and are capped at 10 GB per file; failures report the reason; downloads of non-ASCII filenames fixed
-- **Launch args passthrough**: new/resumed sessions accept optional args such as `--model xxx`, passed to the agent CLI as-is (Web and `rcc-tui`)
-- **Grok support**: new Grok agent with new sessions, history resume, and a custom command setting (`GROK_BIN` / `GROK_PROXY`)
-- **Sessions & error feedback**: multiple new sessions can run in the same directory; agent start failures (missing directory, session limit, ...) are shown in the terminal and the HTTP fallback no longer retries forever; session logs are trimmed by size so long, chatty sessions no longer slow the server down
-- **Usability fixes**: corrected session rename (Esc no longer saves, Enter no longer double-fires, edit auto-focuses), stale resume-history list, file browser single-click navigation and preview race, silent partial upload failures, and extensionless text files being misdetected as binary / UTF-8 truncation garbling
-- **Connection stability**: input is no longer silently dropped during WebSocket reconnect (buffered and replayed); the shared terminal periodically retries upgrading back to WebSocket after an HTTP fallback; the settings-page reconnect delay / keep-alive controls now actually take effect
-- **Mobile & settings**: fixed output freeze after leaving copy mode, Enter not sending on Android, non-live scrollback changes; added a ≥8-character check when changing the password
+- **Large transfers**: uploads and downloads are streamed, so large files no longer hang; non-ASCII filename downloads fixed
+- **Launch args**: new or resumed sessions accept args such as `--model xxx`, passed to the agent as-is (Web and `rcc-tui`)
+- **Grok**: new Grok agent with new sessions, history resume and a custom command
+- **Sessions**: multiple sessions in the same directory; start failures are shown in the terminal
+- **Stability**: input is no longer lost during WebSocket reconnect, and the HTTP fallback retries WebSocket automatically
+- **Fixes**: session rename, history list refresh, file preview, mobile copy mode and Enter-to-send, and more
 
 ### 2026-07-01
 
 - **Agent terminal copy and paste**: fixes PC selection coordinate drift; `Ctrl/Cmd+C` copies when text is selected and keeps interrupt behavior when nothing is selected; `Ctrl/Cmd+V` now uses the browser clipboard path to avoid Windows/X11 server-side clipboard failures
 - **Reading history while tasks run**: manual scrolling pauses bottom lock during Agent output, then returns to the bottom after a short idle delay
 - **File browser directory state**: remembers the last visited directory and restores it after refresh; changing the default directory clears that remembered state
+
+<details>
+<summary>Older changelog</summary>
 
 ### 2026-06-16
 
@@ -190,9 +192,6 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 - **HTTP fallback transport**: when WebSocket is unavailable, the Home session list refreshes by HTTP polling, and Agent terminals plus shared terminals switch to HTTP long polling
 - **Reverse-proxy compatibility**: adds HTTP fallback for session control actions such as `kill`, `delete`, and `rename`, for access layers that do not pass WebSocket Upgrade
 - **Idempotency handling**: session start/attach, terminal start, resize, and kill/delete controls are repeat-safe; terminal input remains non-idempotent to avoid duplicated commands on retry
-
-<details>
-<summary>Older changelog</summary>
 
 ### 2026-06-04
 

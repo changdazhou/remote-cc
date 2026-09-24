@@ -288,9 +288,28 @@ function getAgentProxyEnv(agent) {
   };
 }
 
+// 服务若从某个 Agent 会话内部启动，会继承其运行时标记（关闭颜色、嵌套会话检测等），不能再传给新会话
+const HOST_SESSION_ENV_KEYS = [
+  'NO_COLOR', 'AI_AGENT',
+  'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CODEX_CI', 'CODEX_THREAD_ID', 'CODEX_MANAGED_BY_NPM', 'CODEX_MANAGED_PACKAGE_ROOT',
+];
+const HOST_SESSION_ENV_VALUES = { GIT_EDITOR: 'true', GIT_PAGER: 'cat', GH_PAGER: 'cat' };
+
+function withoutHostSessionEnv(env = {}) {
+  const out = { ...env };
+  for (const key of HOST_SESSION_ENV_KEYS) delete out[key];
+  for (const [key, value] of Object.entries(HOST_SESSION_ENV_VALUES)) {
+    if (out[key] === value) delete out[key];
+  }
+  return out;
+}
+
 function buildAgentEnv(agent, baseEnv = process.env, clientEnv = {}) {
   return {
-    ...withoutProxyEnv(baseEnv),
+    ...withoutProxyEnv(withoutHostSessionEnv(baseEnv)),
     ...withoutProxyEnv(clientEnv),
     ...getAgentProxyEnv(agent),
   };
@@ -324,4 +343,5 @@ module.exports = {
   withoutProxyEnv,
   getAgentProxyEnv,
   buildAgentEnv,
+  withoutHostSessionEnv,
 };

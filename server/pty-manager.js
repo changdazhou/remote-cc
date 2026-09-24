@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { normalizeAgent, findAgentBin, getAgentConfig, buildAgentEnv, parseExtraArgs } = require('./agent-config');
+const { normalizeAgent, findAgentBin, getAgentConfig, buildAgentEnv, withoutHostSessionEnv, parseExtraArgs } = require('./agent-config');
 
 const IS_WIN = process.platform === 'win32';
 const MAX_SESSIONS = 20;
@@ -585,7 +585,7 @@ function spawnSharedShell(ws, { shellId = '1', cwd, cols = 80, rows = 24, env: c
   const shellCwd = resolveShellCwd(cwd);
   const shellBin = selectShellBin();
   const shellEnv = {
-    ...process.env,
+    ...withoutHostSessionEnv(process.env),
     ...clientEnv,
     SHELL: IS_WIN ? process.env.ComSpec : shellBin,
     TERM: IS_WIN ? undefined : 'xterm-256color',

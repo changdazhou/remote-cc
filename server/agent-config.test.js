@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 delete process.env.IS_SANDBOX;
 
-const { getAgentConfig, parseExtraArgs, normalizeAgent } = require('./agent-config');
+const { getAgentConfig, parseExtraArgs, normalizeAgent, buildAgentEnv } = require('./agent-config');
 
 test('codex resume keeps global config before the resume subcommand', () => {
   const args = getAgentConfig('codex').buildArgs({
@@ -105,4 +105,20 @@ test('local preferred commands win over the native command and <AGENT>_BIN', () 
       else process.env[key] = value;
     }
   }
+});
+
+test('agent env drops runtime markers inherited from a host agent session', () => {
+  const env = buildAgentEnv('claude', {
+    PATH: '/usr/bin', TERM: 'xterm-256color', RCC_AGENT: 'claude',
+    NO_COLOR: '1', CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'x', CODEX_CI: '1', CODEX_THREAD_ID: 'y',
+    GIT_EDITOR: 'true', GIT_PAGER: 'cat', PAGER: 'less',
+  }, { COLORFGBG: '15;0' });
+  assert.equal(env.PATH, '/usr/bin');
+  assert.equal(env.RCC_AGENT, 'claude');
+  assert.equal(env.PAGER, 'less');
+  assert.equal(env.COLORFGBG, '15;0');
+  for (const key of ['NO_COLOR', 'CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CODEX_CI', 'CODEX_THREAD_ID', 'GIT_EDITOR', 'GIT_PAGER']) {
+    assert.equal(key in env, false, key);
+  }
+  assert.equal(buildAgentEnv('claude', { GIT_EDITOR: 'vim' }).GIT_EDITOR, 'vim');
 });

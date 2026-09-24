@@ -2030,8 +2030,12 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 ::selection {
-  background: color-mix(in srgb, var(--neon) 36%, transparent);
   color: var(--text);
+}
+@supports (background: color-mix(in srgb, #000000 50%, #ffffff)) {
+  ::selection {
+    background: color-mix(in srgb, var(--neon) 36%, transparent);
+  }
 }
 button:focus-visible,
 input:focus-visible,

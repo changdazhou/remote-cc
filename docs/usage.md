@@ -362,23 +362,23 @@ Displays a large-text banner and session list on launch. `rcc-tui` reads `~/.rcc
 
 ### 2026-09-24
 
-**终端渲染**：改用 WebGL 渲染，选区与文字严格对齐，滚动更流畅。
+**终端渲染**：改用 WebGL 渲染，选区与文字对齐；字体、字号变化后同步列数，PC 端右侧不再截掉字符。
 
 **滚动**：上划查看历史不再被拉回，10 秒无操作后自动回到底部；新增「回到底部」按钮，手机滑动支持惯性。
 
-**配色**：Agent 查询终端颜色时正常应答，配色与当前主题一致。
+**配色**：Agent 查询终端颜色时正常应答，配色跟随主题；在 Agent 会话中启动服务时，新会话不再继承关闭颜色等设置。
 
 **上传**：实时进度、速度、剩余时间，可取消；单文件上限 10 GB。
 
 ### 2026-09-23
 
-**大文件传输**：上传/下载改为流式处理，不再因大文件卡死；上传实时显示进度、速度和剩余时间，可取消，单文件上限 10 GB。
+**大文件传输**：上传、下载改为流式处理，大文件不再卡死。
 
-**启动参数**：新建/恢复会话支持临时填写透传给 Agent CLI 的参数，如 `--model xxx`。
+**启动参数**：新建或恢复会话时可填写 `--model xxx` 等参数，原样传给 Agent。
 
 **Grok**：新增 Grok Agent，支持新建、历史恢复和自定义命令。
 
-**会话**：同一目录可同时开多个新会话；启动失败原因直接显示在终端中。
+**会话**：同一目录可同时开多个会话；启动失败原因直接显示在终端中。
 
 ### 2026-06-04
 
@@ -389,6 +389,9 @@ Displays a large-text banner and session list on launch. `rcc-tui` reads `~/.rcc
 **设置页优化**：移动端 UI 风格预览改为整宽卡片，避免预览图被窄列压扁。
 
 **文档截图**：接入新版截图，按桌面、手机、TUI 分组展示。
+
+<details>
+<summary>更早更新 / Older</summary>
 
 ### 2026-06-03
 
@@ -442,6 +445,8 @@ Displays a large-text banner and session list on launch. `rcc-tui` reads `~/.rcc
 |------|------|
 | `rcc-server reload` | 热重载（改了 app.js 层代码用此命令，不断会话） |
 | `rcc-server restart` | 完整重启（改了 proxy.js/auth.js 等核心文件用此命令） |
+
+</details>
 
 ---
 
