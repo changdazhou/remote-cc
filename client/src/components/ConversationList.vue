@@ -59,6 +59,7 @@
           <div class="cl-meta">
             <span class="cl-agent">{{ agentLabel(s.agent) }}</span>
             <span class="cl-cwd">{{ shortCwd(s.workingDir) }}</span>
+            <span v-if="s.extraArgs?.length" class="cl-cwd" :title="s.extraArgs.join(' ')">{{ s.extraArgs.join(' ') }}</span>
             <span v-if="(s.clientCount || 0) > 1" class="cl-attached" title="Multiple clients attached">
               <AppIcon name="users" />{{ s.clientCount }}
             </span>
@@ -155,8 +156,9 @@ function shortCwd(p) {
   return p.replace(/^\/paddle\//, '~/').replace(/^\/root\//, '~/').replace(/^\/home\/[^/]+\//, '~/');
 }
 
+const AGENT_LABELS = { claude: 'Claude', codex: 'Codex', grok: 'Grok' };
 function agentLabel(agent) {
-  return agent === 'codex' ? 'Codex' : 'Claude';
+  return AGENT_LABELS[agent] || 'Claude';
 }
 
 function timeAgo(ts) {

@@ -38,6 +38,7 @@ export const DEFAULTS = {
   newConversationDefaultDir: '~', // 新建会话默认目录
   claudeCommand: '',           // 自定义 Claude 协议命令
   codexCommand: '',            // 自定义 Codex 协议命令
+  grokCommand: '',             // 自定义 Grok 协议命令
 
   // ── 账户 ──────────────────────────────────────
   username: '',

@@ -36,10 +36,12 @@ const {
   killSessionHttp, deleteSessionHttp, renameSessionHttp,
   startShellHttp, inputShellHttp, resizeShellHttp, pollShellHttp, killShellHttp,
 } = require('./pty-manager');
+const { handleFsUploadRequest, handleAttachmentUploadRequest, handleFsDownloadRequest } = require('./fs-handler');
 
 const PORT = Math.max(1, Math.min(65535, parseInt(process.env.PORT) || 8310));
 const APP_SOCK   = '/tmp/rcc-app.sock';
 const APP_SCRIPT = path.join(__dirname, 'app.js');
+const UPLOAD_DIR = path.join(os.homedir(), '.rcc', 'uploads');
 
 // ── 单实例锁 ──────────────────────────────────────────────────────────────────
 const RCC_DIR   = path.join(os.homedir(), '.rcc');
@@ -228,10 +230,32 @@ function shellHttpRoute(req, res, urlPath, query) {
   return true;
 }
 
+function uploadFilenameHeader(req, fallback) {
+  return req.headers['x-filename-encoded'] || req.headers['x-filename'] || fallback;
+}
+
+// 文件上传/下载在 proxy 内流式处理，不经过 app.js 的 JSON IPC（大文件会占满内存并超时）
+function transferRoute(req, res, urlPath, query) {
+  if (req.method === 'POST' && urlPath === '/api/fs/upload') {
+    handleFsUploadRequest(req, res, query.searchParams.get('path') || '/', uploadFilenameHeader(req, 'upload.bin'));
+    return true;
+  }
+  if (req.method === 'POST' && urlPath === '/api/upload') {
+    handleAttachmentUploadRequest(req, res, UPLOAD_DIR, uploadFilenameHeader(req, 'image.png'));
+    return true;
+  }
+  if (req.method === 'GET' && urlPath === '/api/fs/download') {
+    handleFsDownloadRequest(req, res, query.searchParams.get('path') || '');
+    return true;
+  }
+  return false;
+}
+
 function handleProxyDirect(req, res) {
   const url = req.url.split('?')[0];
   const parsedUrl = new URL(req.url, 'http://localhost');
 
+  if (transferRoute(req, res, url, parsedUrl)) return true;
   if (terminalHttpRoute(req, res, url, parsedUrl)) return true;
   if (shellHttpRoute(req, res, url, parsedUrl)) return true;
 
@@ -483,6 +507,9 @@ server.on('error', err => {
   }
   shutdown(1);
 });
+
+// 大文件上传/下载可能持续很久，不能套用默认的 5 分钟整请求超时
+server.requestTimeout = 0;
 
 server.listen(PORT, () => {
   // 确认端口监听成功后才写入 local.token，避免 watchdog 重试的失败进程覆盖 token

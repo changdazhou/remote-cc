@@ -40,8 +40,9 @@ Web 端默认使用 WebSocket 获取实时状态并传输终端数据；如果�
 
 #### 新建对话
 
-- **New 标签**：选择 Claude Code 或 Codex，输入工作目录或点击目录按钮选择工作目录，填写会话名 → 启动
-- **Resume 标签**：从 Claude Code / Codex 历史中按工作目录选择对话 → 恢复
+- **New 标签**：选择 Claude Code、Codex 或 Grok，输入工作目录或点击目录按钮选择工作目录，填写会话名 → 启动
+- **启动参数**：可选，按 shell 规则拆分后原样追加到 Agent 命令行，例如 `--model opus`；每个 Agent 单独记住本页输入，恢复会话时同样可用
+- **Resume 标签**：从 Claude Code / Codex / Grok 历史中按工作目录选择对话 → 恢复
 - **代理**：安装时可配置 `CODEX_PROXY` / `CLAUDE_PROXY`；代理只用于 Agent CLI，不会作为 RemoteCC 全局代理。
 
 #### 终端操作
@@ -68,7 +69,7 @@ Web 端默认使用 WebSocket 获取实时状态并传输终端数据；如果�
 - **右栏**：文件预览（文本/代码含行号、图片）
 - **新建文件夹**：点击工具栏文件夹加号，在当前目录创建子目录
 - **复制路径**：鼠标悬停条目，点击复制路径按钮；预览面板顶部也有复制按钮
-- **上传 / 下载**：点击上传按钮或把文件拖到文件浏览器，可上传到当前目录；点击下载按钮下载文件
+- **上传 / 下载**：点击上传按钮或把文件拖到文件浏览器，可上传到当前目录（实时显示进度、速度和剩余时间，可取消；单文件上限 10 GB）；点击下载按钮由浏览器直接下载文件
 
 #### 共享终端（右上角终端图标）
 
@@ -215,8 +216,9 @@ Open `http://<server>:8310` in a browser and log in.
 
 #### New Conversation
 
-- **New tab**: Choose Claude Code or Codex, enter a working directory or pick one from the directory picker, enter a session name → start
-- **Resume tab**: Browse Claude Code / Codex history grouped by working directory → resume
+- **New tab**: Choose Claude Code, Codex, or Grok, enter a working directory or pick one from the directory picker, enter a session name → start
+- **Launch args**: optional; split with shell quoting rules and appended to the agent command line as-is, e.g. `--model opus`. Remembered per agent on the page and also available when resuming
+- **Resume tab**: Browse Claude Code / Codex / Grok history grouped by working directory → resume
 - **Proxy**: Configure `CODEX_PROXY` / `CLAUDE_PROXY` during installation; proxy variables are scoped to the agent CLI and are not global RemoteCC proxy settings.
 
 #### Terminal Shortcuts
@@ -243,7 +245,7 @@ Click the folder icon to open the file browser, which defaults to the server roo
 - **Right panel**: file preview (text/code with line numbers, images)
 - **New folder**: click the folder-plus tool button to create a subdirectory in the current directory
 - **Copy path**: hover over an entry and click the copy path button; also available in the preview header
-- **Upload / download**: click the upload button or drop files onto the browser to upload into the current directory; click the download button to download files
+- **Upload / download**: click the upload button or drop files onto the browser to upload into the current directory (live progress, speed and ETA, cancellable; max 10 GB per file); the download button hands the file to the browser's native downloader
 
 #### Shared Terminal (terminal icon, top right)
 
@@ -357,6 +359,26 @@ Displays a large-text banner and session list on launch. `rcc-tui` reads `~/.rcc
 ---
 
 ## 更新记录 / Changelog
+
+### 2026-09-24
+
+**终端渲染**：改用 WebGL 渲染，选区与文字严格对齐，滚动更流畅。
+
+**滚动**：上划查看历史不再被拉回，10 秒无操作后自动回到底部；新增「回到底部」按钮，手机滑动支持惯性。
+
+**配色**：Agent 查询终端颜色时正常应答，配色与当前主题一致。
+
+**上传**：实时进度、速度、剩余时间，可取消；单文件上限 10 GB。
+
+### 2026-09-23
+
+**大文件传输**：上传/下载改为流式处理，不再因大文件卡死；上传实时显示进度、速度和剩余时间，可取消，单文件上限 10 GB。
+
+**启动参数**：新建/恢复会话支持临时填写透传给 Agent CLI 的参数，如 `--model xxx`。
+
+**Grok**：新增 Grok Agent，支持新建、历史恢复和自定义命令。
+
+**会话**：同一目录可同时开多个新会话；启动失败原因直接显示在终端中。
 
 ### 2026-06-04
 

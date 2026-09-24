@@ -181,6 +181,7 @@
             optimistic-echo
             :ref="el => setTermRef(entry.sid, el)"
             @input="onTermInput(entry.sid, $event)"
+            @response="onTermResponse(entry.sid, $event)"
             @resize="onTermResize(entry.sid, $event)"
             @paste="onTermPaste(entry.sid, $event)"
           />
@@ -574,6 +575,8 @@ function connectEntryWS(entry) {
           workingDir: entry.workingDir,
           agent: entry.agent || 'claude',
           resumeSessionId: entry.resumeSessionId || '',
+          extraArgs: entry.extraArgs || '',
+          requestId: entry.requestId || '',
           name: entry.name,
           cols, rows,
         }));
@@ -647,9 +650,7 @@ function connectEntryWS(entry) {
           return;
         }
         case 'error': {
-          entry.connectionStatus = 'error';
-          entry.connectedBadgeVisible = false;
-          clearEntryConnectionBadge(entry);
+          showEntryError(entry, msg.message);
           return;
         }
         case 'detached': {
@@ -694,6 +695,21 @@ function connectEntryWS(entry) {
     clearWsTimers();
     try { ws.close(); } catch (_) {}
   };
+}
+
+function showEntryError(entry, message) {
+  entry.connectionStatus = 'error';
+  entry.connectedBadgeVisible = false;
+  clearEntryConnectionBadge(entry);
+  if (!message) return;
+  const el = termRefs[entry.sid];
+  el?.write?.(`\r\n\x1b[31m[RemoteCC] ${String(message).replace(/\r?\n/g, '\r\n')}\x1b[0m\r\n`);
+}
+
+// 4xx（除超时/限流外）是请求本身有问题，重试不会成功
+function isPermanentHttpError(err) {
+  const status = Number(err?.status) || 0;
+  return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
 }
 
 function applyHttpSessionSnapshot(entry, snapshot, shouldClear = false) {
@@ -818,6 +834,8 @@ async function startEntryHttp(entry) {
             workingDir: entry.workingDir,
             agent: entry.agent || 'claude',
             resumeSessionId: entry.resumeSessionId || '',
+            extraArgs: entry.extraArgs || '',
+            requestId: entry.requestId || '',
             name: entry.name,
             cols,
             rows,
@@ -827,8 +845,12 @@ async function startEntryHttp(entry) {
       flushPendingInputHttp(entry);
       poll(snapshot.cursor ?? 0);
       return;
-    } catch (_) {
+    } catch (err) {
       if (destroyed) return;
+      if (isPermanentHttpError(err)) {
+        showEntryError(entry, err.message);
+        return;
+      }
       markEntryDisconnected(entry);
       entry.connectionStatus = 'connecting';
       await new Promise(resolve => setTimeout(resolve, openRetryDelay));
@@ -903,20 +925,21 @@ function openSession(s) {
   nextTick(() => connectEntryWS(entry));
 }
 
-function startSession({ workingDir, name, resumeSessionId, agent = 'claude' }) {
-  // Deduplicate pending sessions
+function startSession({ workingDir, name, resumeSessionId, agent = 'claude', extraArgs = '' }) {
+  // Deduplicate pending sessions (e.g. double click on start)
   for (const entry of termList) {
     if (entry.attachSessionId === '' &&
         (entry.agent || 'claude') === agent &&
         entry.workingDir === workingDir &&
-        (entry.resumeSessionId || '') === (resumeSessionId || '')) {
+        (entry.resumeSessionId || '') === (resumeSessionId || '') &&
+        (entry.extraArgs || '') === (extraArgs || '')) {
       activeSessionId.value = entry.sid;
       view.value = 'terminal';
       return;
     }
   }
 
-  const placeholder = `pending-${Date.now()}`;
+  const placeholder = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const entry = shallowReactive({
     sid: placeholder,
     ws: null,
@@ -926,6 +949,8 @@ function startSession({ workingDir, name, resumeSessionId, agent = 'claude' }) {
     workingDir: workingDir || '~',
     agent,
     resumeSessionId: resumeSessionId || '',
+    extraArgs: extraArgs || '',
+    requestId: placeholder,
     attachSessionId: '',
     transport: 'ws',
     connectionStatus: 'connecting',
@@ -1182,6 +1207,20 @@ function onTermInput(sid, data) {
   // 但 SymbolBar 的输入绕过了 onData，所以这里统一补充）
   // 仅在输入实际投递或已缓冲时推进追踪，丢弃的输入不推进
   if (delivered && el?.trackInput) el.trackInput(data);
+}
+// 终端对查询的应答只在连接可用时实时发送；过期的应答不能缓冲到重连后再发
+function onTermResponse(sid, data) {
+  const entry = findEntry(sid);
+  const el = termRefs[sid];
+  if (entry?.ws?.readyState === WebSocket.OPEN) {
+    entry.ws.send(data);
+  } else if (entry?.transport === 'http') {
+    api.terminal.input(entry.attachSessionId || entry.sid, {
+      data,
+      cols: el?.getCols?.() ?? 80,
+      rows: el?.getRows?.() ?? 24,
+    }).catch(() => {});
+  }
 }
 function onTermResize(sid, { cols, rows }) {
   const entry = findEntry(sid);

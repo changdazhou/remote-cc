@@ -1,6 +1,7 @@
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
+const crypto = require('crypto');
 const { StringDecoder } = require('string_decoder');
 
 // ── 安全根目录白名单 ──────────────────────────────────────────────────────────
@@ -141,6 +142,7 @@ function listDir(reqPath, showHidden = false) {
 
 const TEXT_MAX_BYTES  = 100 * 1024;  // 100 KB
 const IMAGE_MAX_BYTES = 2  * 1024 * 1024;  // 2 MB
+const UPLOAD_MAX_BYTES = 10 * 1024 * 1024 * 1024;  // 10 GB
 
 /**
  * 读取文件预览内容
@@ -281,6 +283,191 @@ function createDirectory(reqDir, dirname) {
   return statFile(dirPath);
 }
 
+// ── 流式上传 / 下载（不把整个文件读入内存，避免大文件卡死服务）──────────────
+
+function sendJson(res, status, obj) {
+  if (res.headersSent || res.writableEnded) return;
+  const body = JSON.stringify(obj);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'cache-control': 'no-store',
+  });
+  res.end(body);
+}
+
+function errorStatus(err) {
+  const msg = err?.message || '';
+  if (msg.startsWith('Access denied') || err?.code === 'EACCES' || err?.code === 'EPERM') return 403;
+  if (err?.code === 'ENOENT') return 404;
+  if (err?.code === 'ENOSPC') return 507;
+  if (err?.status) return err.status;
+  return 400;
+}
+
+function uploadError(message, status) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+function formatUploadLimit() {
+  return `${UPLOAD_MAX_BYTES / 1024 / 1024 / 1024} GB`;
+}
+
+/**
+ * 在读取请求体前检查声明的大小和磁盘剩余空间，返回 null 表示可以继续
+ */
+function precheckUpload(req, dir) {
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > UPLOAD_MAX_BYTES) {
+    return uploadError(`File too large (max ${formatUploadLimit()})`, 413);
+  }
+  if (Number.isFinite(declared) && declared > 0 && typeof fs.statfsSync === 'function') {
+    try {
+      const st = fs.statfsSync(dir);
+      if (st.bavail * st.bsize < declared) return uploadError('Insufficient disk space', 507);
+    } catch (_) {}
+  }
+  return null;
+}
+
+// 拒绝时不再接收剩余的请求体：回复后直接断开连接
+function rejectUpload(req, res, err) {
+  res.setHeader('connection', 'close');
+  res.on('finish', () => req.destroy());
+  sendJson(res, errorStatus(err), { error: err.message });
+}
+
+function streamRequestToFile(req, filePath) {
+  return new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(filePath, { flags: 'wx', mode: 0o644 });
+    let settled = false;
+    let received = 0;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      try { req.unpipe(out); } catch (_) {}
+      out.destroy();
+      fs.unlink(filePath, () => {});
+      reject(err);
+    };
+    req.on('data', (chunk) => {
+      received += chunk.length;
+      if (received > UPLOAD_MAX_BYTES) fail(uploadError(`File too large (max ${formatUploadLimit()})`, 413));
+    });
+    req.on('error', fail);
+    req.on('close', () => {
+      if (!req.complete && !req.readableEnded) fail(new Error('Upload aborted'));
+    });
+    out.on('error', fail);
+    out.on('finish', () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    });
+    req.pipe(out);
+  });
+}
+
+function drainRequest(req) {
+  try { req.resume(); } catch (_) {}
+}
+
+/**
+ * POST /api/fs/upload?path=<dir>，请求体为文件原始字节
+ */
+async function handleFsUploadRequest(req, res, reqDir, encodedName) {
+  let safeDir;
+  try {
+    safeDir = resolveSafePath(reqDir);
+    if (!fs.statSync(safeDir).isDirectory()) throw new Error('Not a directory');
+  } catch (e) {
+    drainRequest(req);
+    sendJson(res, errorStatus(e), { error: e.message });
+    return;
+  }
+
+  const rejected = precheckUpload(req, safeDir);
+  if (rejected) { rejectUpload(req, res, rejected); return; }
+
+  const safeName = sanitizeFilename(decodeUploadFilename(encodedName));
+  const tmpPath = path.join(safeDir, `.${safeName}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.uploading`);
+  try {
+    await streamRequestToFile(req, tmpPath);
+    const filePath = uniqueFilePath(safeDir, safeName);
+    fs.renameSync(tmpPath, filePath);
+    sendJson(res, 200, statFile(filePath));
+  } catch (e) {
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
+    if (e.status === 413) { rejectUpload(req, res, e); return; }
+    drainRequest(req);
+    sendJson(res, e.message === 'Upload aborted' ? 400 : errorStatus(e), { error: e.message });
+  }
+}
+
+/**
+ * POST /api/upload：终端里粘贴 / 上传的图片和文件，存到 uploadDir 并返回服务器路径
+ */
+async function handleAttachmentUploadRequest(req, res, uploadDir, encodedName) {
+  const uploadName = decodeUploadFilename(encodedName || 'image.png', 'image.png');
+  const ext = uploadName
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .match(/\.[a-zA-Z0-9]+$/)?.[0] || '.png';
+  const filename = `${crypto.randomUUID()}${ext}`;
+  const filePath = path.join(uploadDir, filename);
+  try {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  } catch (e) {
+    drainRequest(req);
+    sendJson(res, 500, { error: e.message });
+    return;
+  }
+  const rejected = precheckUpload(req, uploadDir);
+  if (rejected) { rejectUpload(req, res, rejected); return; }
+  try {
+    await streamRequestToFile(req, filePath);
+    sendJson(res, 200, { path: filePath, filename });
+  } catch (e) {
+    if (e.status) { rejectUpload(req, res, e); return; }
+    drainRequest(req);
+    sendJson(res, e.message === 'Upload aborted' ? 400 : 500, { error: e.message });
+  }
+}
+
+/**
+ * GET /api/fs/download?path=<file>，以流的方式返回文件
+ */
+function handleFsDownloadRequest(req, res, reqPath) {
+  let safePath;
+  let stat;
+  try {
+    safePath = resolveSafePath(reqPath);
+    stat = fs.statSync(safePath);
+    if (stat.isDirectory()) throw new Error('Is a directory');
+  } catch (e) {
+    sendJson(res, errorStatus(e), { error: e.message });
+    return;
+  }
+
+  const name = path.basename(safePath);
+  const stream = fs.createReadStream(safePath);
+  stream.on('open', () => {
+    res.writeHead(200, {
+      'content-type': 'application/octet-stream',
+      'content-length': stat.size,
+      'cache-control': 'no-store',
+      'content-disposition': `attachment; filename="${name.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    });
+    stream.pipe(res);
+  });
+  stream.on('error', (e) => {
+    if (!res.headersSent) sendJson(res, errorStatus(e), { error: e.message });
+    else res.destroy(e);
+  });
+  res.on('close', () => stream.destroy());
+}
+
 function readDownloadFile(reqPath) {
   const safePath = resolveSafePath(reqPath);
   const stat = fs.statSync(safePath);
@@ -294,6 +481,7 @@ function readDownloadFile(reqPath) {
 }
 
 module.exports = {
+  UPLOAD_MAX_BYTES,
   resolveSafePath,
   listDir,
   readFilePreview,
@@ -302,4 +490,7 @@ module.exports = {
   writeUploadedFile,
   readDownloadFile,
   decodeUploadFilename,
+  handleFsUploadRequest,
+  handleAttachmentUploadRequest,
+  handleFsDownloadRequest,
 };

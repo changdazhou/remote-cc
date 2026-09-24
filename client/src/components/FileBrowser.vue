@@ -152,8 +152,21 @@
     </div>
 
     <!-- Toast -->
+    <div v-if="uploading && uploadProgress.name" class="fb-upload-progress">
+      <div class="fb-upload-progress-text">
+        <span class="fb-upload-progress-name">{{ uploadProgress.name }}</span>
+        <span>{{ uploadProgress.total > 1 ? `${uploadProgress.index}/${uploadProgress.total} · ` : '' }}{{ uploadProgress.percent }}%</span>
+        <button class="fb-upload-cancel" title="取消上传" @click.stop="cancelUpload"><AppIcon name="close" /></button>
+      </div>
+      <div class="fb-upload-progress-track"><div class="fb-upload-progress-bar" :style="{ width: uploadProgress.percent + '%' }"></div></div>
+      <div class="fb-upload-progress-detail">
+        <span>{{ formatBytes(uploadProgress.loaded) }} / {{ formatBytes(uploadProgress.size) }}</span>
+        <span v-if="uploadProgress.loaded >= uploadProgress.size && uploadProgress.size">服务器处理中…</span>
+        <span v-else-if="uploadProgress.speed > 0">{{ formatBytes(uploadProgress.speed) }}/s · 剩余 {{ formatDuration(uploadProgress.eta) }}</span>
+      </div>
+    </div>
     <transition name="fb-toast-fade">
-      <div v-if="copyToast" class="fb-toast">{{ copyToast }}</div>
+      <div v-if="copyToast && !(uploading && uploadProgress.name)" class="fb-toast">{{ copyToast }}</div>
     </transition>
     <div v-if="dragOver" class="fb-drag-overlay">
       <AppIcon name="upload" />
@@ -203,7 +216,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import { api } from '../api/index.js';
+import { api, formatBytes, formatDuration } from '../api/index.js';
 import AppIcon from './AppIcon.vue';
 
 const props = defineProps({
@@ -223,6 +236,9 @@ const copyToast     = ref('');
 const fullscreen    = ref(false);
 const uploading     = ref(false);
 const uploadInput   = ref(null);
+const EMPTY_PROGRESS = { name: '', index: 0, total: 0, percent: 0, loaded: 0, size: 0, speed: 0, eta: NaN };
+const uploadProgress = reactive({ ...EMPTY_PROGRESS });
+let uploadAbort = null;
 const dragOver      = ref(false);
 const mkdirOpen     = ref(false);
 const mkdirName     = ref('');
@@ -244,7 +260,10 @@ function onKeydown(e) {
   if (e.key === 'Escape' && fullscreen.value) fullscreen.value = false;
 }
 onMounted(() => window.addEventListener('keydown', onKeydown));
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown);
+  uploadAbort?.abort();
+});
 
 // ── 面包屑 ────────────────────────────────────────────────────────────────────
 const breadcrumbs = computed(() => {
@@ -452,29 +471,56 @@ async function onDropUpload(e) {
 
 async function uploadFiles(files) {
   if (!files.length) return;
+  if (uploading.value) {
+    showToast('正在上传，请等待当前上传完成');
+    return;
+  }
+  const targetDir = currentPath.value || '/';
+  const abort = new AbortController();
+  uploadAbort = abort;
   uploading.value = true;
   let ok = 0;
   const failed = [];
   try {
-    for (const file of files) {
+    for (let i = 0; i < files.length && !abort.signal.aborted; i++) {
+      const file = files[i];
+      Object.assign(uploadProgress, { ...EMPTY_PROGRESS, name: file.name, index: i + 1, total: files.length, size: file.size });
       try {
-        await api.fs.upload(currentPath.value || '/', file);
+        await api.fs.upload(targetDir, file, {
+          signal: abort.signal,
+          onProgress: (loaded, total, { speed, eta }) => {
+            Object.assign(uploadProgress, {
+              percent: total ? Math.min(100, Math.floor(loaded / total * 100)) : 0,
+              loaded, size: total, speed, eta,
+            });
+          },
+        });
         ok++;
       } catch (err) {
-        failed.push(file.name);
+        if (!abort.signal.aborted) failed.push({ name: file.name, message: err?.message || String(err) });
       }
     }
   } finally {
+    if (uploadAbort === abort) uploadAbort = null;
     uploading.value = false;
-    await loadDir(currentPath.value || '/');
+    Object.assign(uploadProgress, EMPTY_PROGRESS);
+    if ((currentPath.value || '/') === targetDir) await loadDir(targetDir);
   }
-  if (!failed.length) {
+  if (abort.signal.aborted) {
+    showToast(ok ? `已取消上传（已完成 ${ok} 个）` : '已取消上传');
+  } else if (!failed.length) {
     showToast(`已上传 ${ok} 个文件`);
   } else if (ok) {
-    showToast(`已上传 ${ok} 个，失败 ${failed.length} 个`);
+    showToast(`已上传 ${ok} 个，失败 ${failed.length} 个: ${failed.map(f => f.name).join(', ')}`);
+  } else if (failed.length === 1) {
+    showToast(`上传失败: ${failed[0].name} (${failed[0].message})`);
   } else {
-    showToast(`上传失败: ${failed.join(', ')}`);
+    showToast(`上传失败: ${failed.map(f => f.name).join(', ')}`);
   }
+}
+
+function cancelUpload() {
+  uploadAbort?.abort();
 }
 
 async function downloadEntry(entry) {
@@ -484,15 +530,15 @@ async function downloadEntry(entry) {
     return;
   }
   try {
-    const { blob, filename } = await api.fs.download(p);
-    const url = URL.createObjectURL(blob);
+    // 先确认文件可访问，出错时能给出提示，而不是让浏览器下载一个错误页
+    await api.fs.stat(p);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = filename || entry.name;
+    a.href = api.fs.downloadUrl(p);
+    a.download = entry.name;
+    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
     showToast(`下载: ${entry.name}`);
   } catch (err) {
     showToast(`下载失败: ${err.message || err}`);
@@ -507,10 +553,7 @@ function showToast(msg) {
 
 // ── 格式化 ────────────────────────────────────────────────────────────────────
 function fmtSize(bytes) {
-  if (bytes == null || bytes === '') return '';
-  if (bytes < 1024)             return bytes + ' B';
-  if (bytes < 1024 * 1024)      return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return formatBytes(bytes);
 }
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico']);
@@ -867,6 +910,31 @@ watch(() => props.initialPath, (newPath) => {
   max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   box-shadow: var(--shadow);
 }
+.fb-upload-progress {
+  position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+  width: min(360px, 84%);
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 8px 12px; box-shadow: var(--shadow);
+  font-size: 11px; color: var(--text);
+}
+.fb-upload-progress-text { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.fb-upload-progress-name { flex: 1; }
+.fb-upload-progress-detail {
+  display: flex; gap: 8px; justify-content: space-between; margin-top: 5px;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.fb-upload-cancel {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; flex: none;
+  border: none; border-radius: 4px; background: transparent; color: inherit; cursor: pointer;
+  --app-icon-size: 12px;
+}
+.fb-upload-cancel:hover { background: var(--panel2); color: var(--danger); }
+.fb-upload-progress-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.fb-upload-progress-track { height: 4px; border-radius: 2px; background: var(--panel2); overflow: hidden; }
+.fb-upload-progress-bar { height: 100%; background: var(--neon); transition: width .2s; }
 .fb-toast-fade-enter-active { transition: opacity .15s, transform .15s; }
 .fb-toast-fade-leave-active { transition: opacity .2s, transform .2s; }
 .fb-toast-fade-enter-from  { opacity: 0; transform: translateX(-50%) translateY(8px); }

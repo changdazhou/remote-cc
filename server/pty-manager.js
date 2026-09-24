@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { normalizeAgent, findAgentBin, getAgentConfig, buildAgentEnv } = require('./agent-config');
+const { normalizeAgent, findAgentBin, getAgentConfig, buildAgentEnv, parseExtraArgs } = require('./agent-config');
 
 const IS_WIN = process.platform === 'win32';
 const MAX_SESSIONS = 20;
@@ -301,7 +301,7 @@ function startSocketServer(sessionId) {
 
 // ── Create session ────────────────────────────────────────────────────────────
 
-function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, cols = 80, rows = 24, env: clientEnv = {} }) {
+function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, extraArgs, requestId, cols = 80, rows = 24, env: clientEnv = {} }) {
   // 防重复：同一个 wsId 已有 session，直接复用
   if (wsToSession.has(wsId)) {
     const existing = wsToSession.get(wsId);
@@ -313,24 +313,34 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, col
     wsToSession.delete(wsId);
   }
 
-  const cwd = (workingDir && workingDir.trim()) ? expandHome(workingDir.trim())
+  const rawDir = typeof workingDir === 'string' ? workingDir.trim() : '';
+  const cwd = rawDir ? path.resolve(expandHome(rawDir))
     : (IS_WIN ? process.env.USERPROFILE || 'C:\\' : process.env.HOME || '/tmp');
   const agentId = normalizeAgent(agent);
   const agentCfg = getAgentConfig(agentId);
+  const startRequestId = typeof requestId === 'string' ? requestId.slice(0, 128) : '';
+  const resumeId = typeof resumeSessionId === 'string' ? resumeSessionId.trim() : '';
 
-  // 全局防重复：同 agent + cwd + resumeSessionId 已有活跃 session → 直接 attach
+  // 防重复：同一次启动请求（客户端重连/HTTP 重试会复用 requestId），
+  // 或同 agent + cwd 恢复同一个历史会话 → 直接 attach 已有 session
   for (const [existingId, s] of sessions) {
-    if (
-      s.exitCode === null &&
-      s.ptyProcess &&
+    if (s.exitCode !== null || !s.ptyProcess) continue;
+    const sameRequest = startRequestId && s.requestId === startRequestId;
+    const sameResume = resumeId &&
       (s.agent || 'claude') === agentId &&
       s.workingDir === cwd &&
-      (s.resumeSessionId || '') === (resumeSessionId || '')
-    ) {
-      // Attach to existing session instead of spawning a new one
+      s.resumeSessionId === resumeId;
+    if (sameRequest || sameResume) {
       attachSession(ws, wsId, existingId);
       return;
     }
+  }
+
+  let cwdStat = null;
+  try { cwdStat = fs.statSync(cwd); } catch (_) {}
+  if (!cwdStat || !cwdStat.isDirectory()) {
+    try { ws.send(JSON.stringify({ type: 'error', message: `Working directory not found: ${cwd}` })); } catch (_) {}
+    return;
   }
 
   const alive = [...sessions.values()].filter(s => s.exitCode === null && s.ptyProcess).length;
@@ -347,7 +357,8 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, col
   // 防止 write-after-end 等 stream 错误未处理导致进程崩溃
   logStream.on('error', () => {});
 
-  const args = agentCfg.buildArgs({ cwd, resumeSessionId });
+  const userArgs = parseExtraArgs(extraArgs);
+  const args = agentCfg.buildArgs({ cwd, resumeSessionId: resumeId, extraArgs: userArgs });
   const agentBin = findAgentBin(agentId);
 
   // Windows: node-pty 用 ConPTY，直接 spawn CLI
@@ -381,7 +392,9 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, col
   const client = wsClient(ws);
   const session = {
     name: sessionName, workingDir: cwd, agent: agentId,
-    resumeSessionId: resumeSessionId || '',
+    resumeSessionId: resumeId,
+    requestId: startRequestId,
+    extraArgs: userArgs,
     ptyProcess, clients: new Set([client]),
     buffer: '', bufferBase: 0, httpWaiters: new Set(), logPath, logStream,
     socketPath: null, socketServer: null,
@@ -403,7 +416,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, col
     trimBuffer(session);
     // 通过 session.logStream 访问，避免闭包捕获旧 stream（rotate 后会更新）
     try { if (session.logStream && !session.logStream.destroyed) session.logStream.write(data); } catch (_) {}
-    rotateLogIfNeeded(sessionId);
+    rotateLogIfNeeded(sessionId, Buffer.byteLength(data));
     session.lastActiveAt = Date.now();
     notifyHttpWaiters(session);
     broadcastData(session, data);
@@ -426,7 +439,9 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, col
     notifyHttpWaiters(session);
     // 退出后 5s 自动删除（给客户端时间显示退出消息）
     setTimeout(() => {
+      if (sessions.get(sessionId) !== session) return;
       sessions.delete(sessionId);
+      logCheckCounters.delete(sessionId);
       saveMeta();
       broadcastSessionList();
     }, 5000);
@@ -764,24 +779,12 @@ function handleMessage(ws, wsId, raw) {
     }
 
     case 'delete':
-      if (msg.sessionId) {
-        const s = sessions.get(msg.sessionId);
-        if (s) {
-          // Kill if still alive
-          if (s.ptyProcess) { try { s.ptyProcess.kill(); } catch (_) {} }
-          if (s.logStream)  { try { s.logStream.end(); }  catch (_) {} }
-          if (s.socketServer) { try { s.socketServer.close(); } catch (_) {} }
-          sessions.delete(msg.sessionId);
-          saveMeta();
-          broadcastSessionList();
-        }
-      }
+      if (msg.sessionId) deleteSessionHttp(msg.sessionId);
       break;
 
     case 'rename':
-      if (msg.sessionId && msg.name) {
-        const s = sessions.get(msg.sessionId);
-        if (s) { s.name = msg.name; saveMeta(); broadcastSessionList(); }
+      if (msg.sessionId && typeof msg.name === 'string' && msg.name.trim()) {
+        renameSessionHttp(msg.sessionId, { name: msg.name });
       }
       break;
 
@@ -948,6 +951,7 @@ function deleteSessionHttp(sessionId) {
   }
   notifyHttpWaiters(session);
   sessions.delete(sessionId);
+  logCheckCounters.delete(sessionId);
   saveMeta();
   broadcastSessionList();
   return { ok: true, found: true };
@@ -1046,6 +1050,7 @@ function killShellHttp(shellId = '1') {
 function getSessionList() {
   return Array.from(sessions.entries()).map(([id, s]) => ({
     sessionId: id, name: s.name, workingDir: s.workingDir, agent: s.agent || 'claude',
+    extraArgs: s.extraArgs || [],
     alive: s.exitCode === null && !!s.ptyProcess,
     exitCode: s.exitCode,
     createdAt: s.createdAt, lastActiveAt: s.lastActiveAt,
@@ -1057,33 +1062,52 @@ function getSessionList() {
 function listSessions() { return getSessionList(); }
 
 const LOG_MAX_LINES = 9000;
-// 每写入多少字节检查一次行数（避免频繁 stat）
-const LOG_CHECK_INTERVAL = 64 * 1024; // 64KB
+// Agent TUI 输出换行很少，仅按行数限制会让日志无限增长；超过上限后只保留尾部
+const LOG_MAX_BYTES = 4 * 1024 * 1024;
+const LOG_KEEP_BYTES = 2 * 1024 * 1024;
+// 每写入多少字节检查一次文件大小（避免频繁 stat）
+const LOG_CHECK_INTERVAL = 256 * 1024;
 
-// 追踪每个 session 上次 rotate 时的字节偏移
 const logCheckCounters = new Map(); // sessionId → bytes since last check
 
-function rotateLogIfNeeded(sessionId) {
+function readFileTail(filePath, maxBytes) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const size = fs.fstatSync(fd).size;
+    const length = Math.min(size, maxBytes);
+    const buf = Buffer.allocUnsafe(length);
+    const n = fs.readSync(fd, buf, 0, length, size - length);
+    return { text: buf.toString('utf8', 0, n), truncated: size > length };
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch (_) {} }
+  }
+}
+
+function tailLines(text, truncated) {
+  const lines = text.split('\n');
+  // 从文件中间截取时第一行不完整，丢弃
+  if (truncated && lines.length > 1) lines.shift();
+  if (lines.length <= LOG_MAX_LINES) return lines.join('\n');
+  return lines.slice(lines.length - LOG_MAX_LINES).join('\n');
+}
+
+function rotateLogIfNeeded(sessionId, bytes = 0) {
   const session = sessions.get(sessionId);
   if (!session || !session.logPath) return;
 
-  const counter = (logCheckCounters.get(sessionId) || 0) + 1024; // approximate
-  logCheckCounters.set(sessionId, counter);
-  if (counter < LOG_CHECK_INTERVAL) return;
+  const counter = (logCheckCounters.get(sessionId) || 0) + bytes;
+  if (counter < LOG_CHECK_INTERVAL) {
+    logCheckCounters.set(sessionId, counter);
+    return;
+  }
   logCheckCounters.set(sessionId, 0);
 
   try {
-    const content = fs.readFileSync(session.logPath, 'utf8');
-    const lines = content.split('\n');
-    if (lines.length <= LOG_MAX_LINES) return;
-    // 保留最后 9000 行
-    const trimmed = lines.slice(lines.length - LOG_MAX_LINES).join('\n');
-    // 关闭旧 stream，重写文件，重新打开
-    try { session.logStream.end(); } catch (_) {}
-    fs.writeFileSync(session.logPath, trimmed, 'utf8');
-    const newStream = fs.createWriteStream(session.logPath, { flags: 'a' });
-    newStream.on('error', () => {});
-    session.logStream = newStream;
+    if (fs.statSync(session.logPath).size <= LOG_MAX_BYTES) return;
+    // logStream 以追加模式打开，原地截断后后续写入会自动接在新文件末尾
+    const tail = readFileTail(session.logPath, LOG_KEEP_BYTES);
+    fs.writeFileSync(session.logPath, tailLines(tail.text, tail.truncated), 'utf8');
   } catch (_) {}
 }
 
@@ -1091,10 +1115,8 @@ function readLog(sessionId) {
   const session = sessions.get(sessionId);
   if (!session || !session.logPath) return null;
   try {
-    const content = fs.readFileSync(session.logPath, 'utf8');
-    const lines = content.split('\n');
-    if (lines.length <= LOG_MAX_LINES) return content;
-    return lines.slice(lines.length - LOG_MAX_LINES).join('\n');
+    const tail = readFileTail(session.logPath, LOG_KEEP_BYTES);
+    return tailLines(tail.text, tail.truncated);
   } catch (_) { return null; }
 }
 

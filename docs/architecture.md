@@ -49,7 +49,7 @@
 #### `server/app.js`
 
 可热重启的业务层，监听 Unix Socket，通过 mock req/res 处理 Express 路由：
-- 所有 REST API（projects、sessions、upload、fs）
+- 其余 REST API（projects、sessions、fs、settings）；文件上传/下载由 proxy.js 直接流式处理，不经过 IPC
 - SPA 静态文件服务 + SPA fallback
 
 #### `server/pty-manager.js`
@@ -67,7 +67,7 @@ sessions: Map<sessionId, {
 ```
 
 **关键机制**：
-- 同 `workingDir + resumeSessionId` 已有活跃会话 → 直接 attach，不重复创建
+- 相同 `requestId`（客户端重连/HTTP 重试）或同 Agent + `workingDir` + `resumeSessionId` 已有活跃会话 → 直接 attach，不重复创建；新会话即使目录相同也会单独创建
 - PTY 输出广播给所有 clients（WS + Unix Socket）
 - Web 端默认走 WS；WS Upgrade 不可用时，会话列表和终端都可切换到 HTTP 轮询
 - 会话退出 5s 后自动清理并广播列表更新
@@ -159,13 +159,13 @@ Kept for direct startup and development. It exposes the same HTTP terminal fallb
 #### `server/app.js`
 
 Hot-reloadable business layer, listens on Unix Socket, handles Express routes via mock req/res:
-- All REST APIs (projects, sessions, upload, fs)
+- Remaining REST APIs (projects, sessions, fs, settings); file upload/download is streamed directly by proxy.js instead of going through IPC
 - Static file serving + SPA fallback
 
 #### `server/pty-manager.js`
 
 PTY session pool, loaded by proxy.js, lifecycle tied to proxy:
-- Same `workingDir + resumeSessionId` with active session → attach directly
+- Same `requestId` (client reconnect / HTTP retry), or same agent + `workingDir` + `resumeSessionId` with an active session → attach directly; new sessions in the same directory are created separately
 - PTY output broadcast to all clients (WS + Unix Socket)
 - Web uses WS by default; if WS Upgrade is unavailable, session lists and terminals can switch to HTTP polling
 - Session auto-removed 5s after PTY exits

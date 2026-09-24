@@ -32,7 +32,8 @@ This is not screenshots or log forwarding. It is **true bidirectional real-time 
 - **Real-time multi-client sync** — phone, tablet, and desktop all share the same agent session
 - **HTTP fallback transport** — when a proxy or access gateway blocks WebSocket, Home, Agent terminals, and shared terminals automatically fall back to HTTP
 - **Persistent sessions** — close the browser or drop SSH, the agent keeps running; reconnect anytime
-- **History resume** — reads Claude Code / Codex history and resumes conversations in the right working directory
+- **History resume** — reads Claude Code / Codex / Grok history and resumes conversations in the right working directory
+- **Launch args passthrough** — add args such as `--model xxx` when starting or resuming a session; they are passed to the agent CLI as-is
 - **Directory-based task creation** — choose the working directory from the server directory tree
 - **File browser** — browse server files in the web UI, preview code/images, copy paths
 - **Session manager** — run `remotecc` on the server to get a visual menu for managing sessions
@@ -117,7 +118,7 @@ bash install.sh
 
 The install script is fully interactive and auto-detects your environment.
 
-RemoteCC auto-detects Claude Code and Codex; at least one of them must be installed. New sessions can choose the agent, and history resume supports Claude Code's `~/.claude/projects/` plus Codex session records from `~/.codex/sessions/`.
+RemoteCC auto-detects Claude Code, Codex, and Grok; at least one of them must be installed. New sessions can choose the agent and optionally pass launch args (for example `--model xxx`) straight to the agent CLI. History resume supports Claude Code's `~/.claude/projects/`, Codex session records from `~/.codex/sessions/`, and Grok sessions from `~/.grok/sessions/`.
 
 If Codex or Claude Code needs a proxy, configure `CODEX_PROXY` / `CLAUDE_PROXY` in the installer. The proxy is injected only into the selected agent CLI, not into RemoteCC globally. The prompt uses `http://127.0.0.1:7890` as a generic example.
 
@@ -154,8 +155,20 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 ## Changelog
 
+### 2026-09-24
+
+- **Terminal rendering**: switched to the WebGL renderer so selections line up exactly with text and no longer cover the first character; glyph widths are re-measured after web fonts load or when a terminal becomes visible; falls back automatically when WebGL is unavailable
+- **Scrolling**: scrolling up to read history is no longer pulled back by new output, and the view returns to the bottom after 10 seconds of inactivity; new "jump to bottom / new output" button; wheel animation removed and touch scrolling gains momentum
+- **Terminal colors**: color queries from agents (OSC 10/11, etc.) are answered so they pick colors matching the current theme; no duplicate replies during replay or with multiple devices attached
+- **Uploads**: live progress, speed and ETA, cancellable; 10 GB per-file limit and an early insufficient-disk-space error
+- **Agent commands**: status always shows the resolved absolute executable path; preferred commands (`RCC_<AGENT>_PREFERRED`) and `CODEX_HOME` can be set per machine in `~/.rcc/agent.env`
+
 ### 2026-09-23
 
+- **Large uploads/downloads no longer hang**: transfers are streamed on the server and the browser sends files directly instead of loading them into memory; uploads show live progress, speed and ETA, can be cancelled, and are capped at 10 GB per file; failures report the reason; downloads of non-ASCII filenames fixed
+- **Launch args passthrough**: new/resumed sessions accept optional args such as `--model xxx`, passed to the agent CLI as-is (Web and `rcc-tui`)
+- **Grok support**: new Grok agent with new sessions, history resume, and a custom command setting (`GROK_BIN` / `GROK_PROXY`)
+- **Sessions & error feedback**: multiple new sessions can run in the same directory; agent start failures (missing directory, session limit, ...) are shown in the terminal and the HTTP fallback no longer retries forever; session logs are trimmed by size so long, chatty sessions no longer slow the server down
 - **Usability fixes**: corrected session rename (Esc no longer saves, Enter no longer double-fires, edit auto-focuses), stale resume-history list, file browser single-click navigation and preview race, silent partial upload failures, and extensionless text files being misdetected as binary / UTF-8 truncation garbling
 - **Connection stability**: input is no longer silently dropped during WebSocket reconnect (buffered and replayed); the shared terminal periodically retries upgrading back to WebSocket after an HTTP fallback; the settings-page reconnect delay / keep-alive controls now actually take effect
 - **Mobile & settings**: fixed output freeze after leaving copy mode, Enter not sending on Android, non-live scrollback changes; added a ≥8-character check when changing the password

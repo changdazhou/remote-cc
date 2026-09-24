@@ -29,17 +29,29 @@ if [[ -f "$RCC_DIR/.env" ]]; then
   set +a
 fi
 
+# 本机私有的 Agent 配置（命令路径、CODEX_HOME 等），不纳入仓库
+AGENT_ENV_FILE="$HOME/.rcc/agent.env"
+if [[ -f "$AGENT_ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source <(grep -E '^[A-Z_]+=.' "$AGENT_ENV_FILE")
+  set +a
+fi
+
 PORT="${PORT:-8310}"
 RC_USER="${RC_USER:-admin}"
 RC_PASS="${RC_PASS:-changeme}"
 CLAUDE_BIN="${CLAUDE_BIN:-}"
 CODEX_BIN="${CODEX_BIN:-}"
-CODEX_HOME="${CODEX_HOME:-$HOME/.baidu-cx}"
+GROK_BIN="${GROK_BIN:-}"
+CODEX_HOME="${CODEX_HOME:-}"
 RCC_AGENT="${RCC_AGENT:-claude}"
 CLAUDE_PROXY="${CLAUDE_PROXY:-}"
 CODEX_PROXY="${CODEX_PROXY:-}"
+GROK_PROXY="${GROK_PROXY:-}"
 CLAUDE_NO_PROXY="${CLAUDE_NO_PROXY:-}"
 CODEX_NO_PROXY="${CODEX_NO_PROXY:-}"
+GROK_NO_PROXY="${GROK_NO_PROXY:-}"
 AGENT_NO_PROXY="${AGENT_NO_PROXY:-}"
 ONEAPI_AUTH_TOKEN="${ONEAPI_AUTH_TOKEN:-}"
 IS_SANDBOX="${IS_SANDBOX:-}"
@@ -117,11 +129,14 @@ do_watchdog() {
     export RCC_AGENT
     [[ -n "$CLAUDE_BIN"   ]] && export CLAUDE_BIN
     [[ -n "$CODEX_BIN"    ]] && export CODEX_BIN
+    [[ -n "$GROK_BIN"     ]] && export GROK_BIN
     [[ -n "$CODEX_HOME"   ]] && export CODEX_HOME
     [[ -n "$CLAUDE_PROXY" ]] && export CLAUDE_PROXY
     [[ -n "$CODEX_PROXY"  ]] && export CODEX_PROXY
+    [[ -n "$GROK_PROXY"   ]] && export GROK_PROXY
     [[ -n "$CLAUDE_NO_PROXY" ]] && export CLAUDE_NO_PROXY
     [[ -n "$CODEX_NO_PROXY"  ]] && export CODEX_NO_PROXY
+    [[ -n "$GROK_NO_PROXY"   ]] && export GROK_NO_PROXY
     [[ -n "$AGENT_NO_PROXY"  ]] && export AGENT_NO_PROXY
     [[ -n "$ONEAPI_AUTH_TOKEN" ]] && export ONEAPI_AUTH_TOKEN
     [[ -n "$IS_SANDBOX"   ]] && export IS_SANDBOX

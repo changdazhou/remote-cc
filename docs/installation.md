@@ -26,7 +26,7 @@ bash install.sh
 |------|------|
 | Node.js | >= 18，推荐 v24 |
 | 操作系统 | Linux / macOS |
-| Agent CLI | 至少安装一个：Claude Code（`npm install -g @anthropic-ai/claude-code`）或 Codex（`npm install -g @openai/codex`） |
+| Agent CLI | 至少安装一个：Claude Code（`npm install -g @anthropic-ai/claude-code`）、Codex（`npm install -g @openai/codex`）或 Grok |
 | 内存 | >= 512MB |
 
 #### 1. 克隆项目
@@ -56,6 +56,9 @@ cd ../client && npm install && npm run build
 | `IS_SANDBOX` | — | 设为 `1` 自动跳过权限确认 |
 | `CLAUDE_PROXY` | — | 仅 Claude Code CLI 使用的代理 URL |
 | `CODEX_PROXY` | — | 仅 Codex CLI 使用的代理 URL |
+| `GROK_PROXY` | — | 仅 Grok CLI 使用的代理 URL |
+| `CLAUDE_BIN` / `CODEX_BIN` / `GROK_BIN` | 自动检测 | 指定 Agent 可执行文件路径（Web 设置页的「Agent 命令」优先级更高） |
+| `RCC_CLAUDE_PREFERRED` / `RCC_CODEX_PREFERRED` / `RCC_GROK_PREFERRED` | — | 本机首选的同协议命令，多个用 `:` 分隔，存在时优先于原生命令和 `*_BIN`；建议写在 `~/.rcc/agent.env`（本机私有，不纳入仓库，`CODEX_HOME` 也可放在这里） |
 | `AGENT_NO_PROXY` | `localhost,127.0.0.1,::1` | Agent CLI 的 NO_PROXY |
 
 `RC_PASS` 是初始/兜底密码。通过 Web 设置页修改密码后，新密码会以 scrypt 哈希写入 `~/.rcc/auth.json`，后续登录优先使用该文件。
@@ -173,7 +176,7 @@ The script automatically detects the environment, installs dependencies, builds 
 |------|-------------|
 | Node.js | >= 18, v24 recommended |
 | OS | Linux / macOS |
-| Agent CLI | Install at least one: Claude Code (`npm install -g @anthropic-ai/claude-code`) or Codex (`npm install -g @openai/codex`) |
+| Agent CLI | Install at least one: Claude Code (`npm install -g @anthropic-ai/claude-code`), Codex (`npm install -g @openai/codex`), or Grok |
 | Memory | >= 512MB |
 
 #### 1. Clone
@@ -203,6 +206,9 @@ cd ../client && npm install && npm run build
 | `IS_SANDBOX` | — | Set to `1` to skip permission prompts |
 | `CLAUDE_PROXY` | — | Proxy URL used only by the Claude Code CLI |
 | `CODEX_PROXY` | — | Proxy URL used only by the Codex CLI |
+| `GROK_PROXY` | — | Proxy URL used only by the Grok CLI |
+| `CLAUDE_BIN` / `CODEX_BIN` / `GROK_BIN` | auto-detected | Agent executable path (the "Agent Commands" setting in the Web UI takes precedence) |
+| `RCC_CLAUDE_PREFERRED` / `RCC_CODEX_PREFERRED` / `RCC_GROK_PREFERRED` | — | Machine-local preferred same-protocol commands, `:`-separated; used before the native command and `*_BIN` when present. Best kept in `~/.rcc/agent.env` (machine-private, not in the repo; `CODEX_HOME` can go there too) |
 | `AGENT_NO_PROXY` | `localhost,127.0.0.1,::1` | NO_PROXY for agent CLIs |
 
 `RC_PASS` is the initial/fallback password. After changing the password from the Web settings page, the new password is stored as a scrypt hash in `~/.rcc/auth.json` and takes precedence for future logins.

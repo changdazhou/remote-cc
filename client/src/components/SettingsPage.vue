@@ -379,6 +379,7 @@ const directoryFields = [
 const agentCommandFields = [
   { id: 'claude', key: 'claudeCommand', name: 'Claude Code', placeholder: 'claude' },
   { id: 'codex', key: 'codexCommand', name: 'Codex', placeholder: 'codex' },
+  { id: 'grok', key: 'grokCommand', name: 'Grok', placeholder: 'grok' },
 ];
 const mobileEnterOptions = [
   { value: 'send', labelKey: 'enter_send' },
@@ -467,7 +468,7 @@ function queueAgentRefresh() {
   agentRefreshTimer = setTimeout(refreshAgents, 1200);
 }
 
-watch(() => [settings.claudeCommand, settings.codexCommand], queueAgentRefresh);
+watch(() => [settings.claudeCommand, settings.codexCommand, settings.grokCommand], queueAgentRefresh);
 
 onMounted(() => {
   refreshAgents();

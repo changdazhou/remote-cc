@@ -2,15 +2,25 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { getWebSettings } = require('./web-settings');
+const { localAgentEnvValue, splitPathList } = require('./local-env');
 
 const IS_WIN = process.platform === 'win32';
+const HOME = os.homedir();
 const DEFAULT_AGENT = (process.env.RCC_AGENT || 'claude').toLowerCase();
 const PROXY_ENV_KEYS = [
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
   'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
 ];
-const BAIDU_CC_CLAUDE_BIN = '/root/.comate/baidu-cc/bin/ducc';
-const BAIDU_CX_CODEX_BIN = '/root/.baidu-cx/baidu-cx/bin/ducx';
+const MAX_EXTRA_ARGS_LENGTH = 4096;
+
+// 本机首选的同协议 CLI（RCC_<AGENT>_PREFERRED，按 PATH 分隔符分隔）：存在时优先于原生命令（仅 Unix）
+function preferredCandidates(agentId) {
+  return splitPathList(localAgentEnvValue(`RCC_${agentId.toUpperCase()}_PREFERRED`)).map(expandHome);
+}
+
+function sandboxEnabled() {
+  return process.env.IS_SANDBOX === '1';
+}
 
 const AGENTS = {
   claude: {
@@ -19,22 +29,22 @@ const AGENTS = {
     envVar: 'CLAUDE_BIN',
     command: IS_WIN ? 'claude.cmd' : 'claude',
     windowsCandidates: [
-      path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.cmd'),
-      path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude'),
+      path.join(HOME, 'AppData', 'Roaming', 'npm', 'claude.cmd'),
+      path.join(HOME, 'AppData', 'Roaming', 'npm', 'claude'),
       'claude.cmd',
       'claude',
     ],
     unixCandidates: [
-      process.env.CLAUDE_BIN,
-      '/root/.nvm/versions/node/v24.14.0/bin/claude',
       'claude',
-      BAIDU_CC_CLAUDE_BIN,
+      '/root/.nvm/versions/node/v24.14.0/bin/claude',
+      path.join(HOME, '.claude', 'local', 'claude'),
+      path.join(HOME, '.local', 'bin', 'claude'),
     ],
-    buildArgs({ resumeSessionId }) {
+    buildArgs({ resumeSessionId, extraArgs = [] }) {
       const args = [];
-      if (process.env.IS_SANDBOX === '1') args.push('--dangerously-skip-permissions');
+      if (sandboxEnabled()) args.push('--dangerously-skip-permissions');
       if (resumeSessionId) args.push('--resume', resumeSessionId);
-      return args;
+      return [...args, ...extraArgs];
     },
   },
   codex: {
@@ -43,17 +53,15 @@ const AGENTS = {
     envVar: 'CODEX_BIN',
     command: IS_WIN ? 'codex.cmd' : 'codex',
     windowsCandidates: [
-      path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'codex.cmd'),
-      path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'codex'),
+      path.join(HOME, 'AppData', 'Roaming', 'npm', 'codex.cmd'),
+      path.join(HOME, 'AppData', 'Roaming', 'npm', 'codex'),
       'codex.cmd',
       'codex',
     ],
     unixCandidates: [
-      process.env.CODEX_BIN,
-      BAIDU_CX_CODEX_BIN,
       'codex',
     ],
-    buildArgs({ cwd, resumeSessionId }) {
+    buildArgs({ cwd, resumeSessionId, extraArgs = [] }) {
       const globalArgs = [
         '-c', `shell_environment_policy.exclude=${JSON.stringify(PROXY_ENV_KEYS)}`,
       ];
@@ -61,33 +69,125 @@ const AGENTS = {
         '--cd', cwd,
         '--no-alt-screen',
       ];
-      if (process.env.IS_SANDBOX === '1') globalArgs.push('--dangerously-bypass-approvals-and-sandbox');
-      if (resumeSessionId) return [...globalArgs, 'resume', ...sessionArgs, resumeSessionId];
-      return [...globalArgs, ...sessionArgs];
+      if (sandboxEnabled()) sessionArgs.push('--dangerously-bypass-approvals-and-sandbox');
+      if (resumeSessionId) return [...globalArgs, 'resume', ...sessionArgs, ...extraArgs, resumeSessionId];
+      return [...globalArgs, ...sessionArgs, ...extraArgs];
+    },
+  },
+  grok: {
+    id: 'grok',
+    label: 'Grok',
+    envVar: 'GROK_BIN',
+    command: IS_WIN ? 'grok.exe' : 'grok',
+    windowsCandidates: [
+      path.join(HOME, '.grok', 'bin', 'grok.exe'),
+      'grok.exe',
+      'grok',
+    ],
+    unixCandidates: [
+      'grok',
+      path.join(process.env.GROK_HOME || path.join(HOME, '.grok'), 'bin', 'grok'),
+      path.join(HOME, '.local', 'bin', 'grok'),
+    ],
+    buildArgs({ resumeSessionId, extraArgs = [] }) {
+      const args = [];
+      if (sandboxEnabled()) args.push('--always-approve');
+      if (resumeSessionId) args.push('--resume', resumeSessionId);
+      return [...args, ...extraArgs];
     },
   },
 };
 
 function normalizeAgent(agent) {
-  const id = (agent || DEFAULT_AGENT || 'claude').toLowerCase();
+  const id = String(agent || DEFAULT_AGENT || 'claude').toLowerCase();
   return AGENTS[id] ? id : 'claude';
 }
 
+/**
+ * 把用户输入的启动参数字符串按 shell 规则拆分（支持单/双引号和反斜杠转义），不做变量展开。
+ * @param {string|string[]} input
+ * @returns {string[]}
+ */
+function parseExtraArgs(input) {
+  if (Array.isArray(input)) {
+    return input.filter(item => typeof item === 'string' && item.length).slice(0, 64);
+  }
+  if (typeof input !== 'string') return [];
+  const text = input.slice(0, MAX_EXTRA_ARGS_LENGTH);
+  const args = [];
+  let current = '';
+  let hasToken = false;
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") {
+      if (ch === "'") quote = '';
+      else current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = '';
+      else if (ch === '\\' && i + 1 < text.length && '"\\$`'.includes(text[i + 1])) current += text[++i];
+      else current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      hasToken = true;
+    } else if (ch === '\\' && i + 1 < text.length) {
+      current += text[++i];
+      hasToken = true;
+    } else if (/\s/.test(ch)) {
+      if (hasToken) args.push(current);
+      current = '';
+      hasToken = false;
+    } else {
+      current += ch;
+      hasToken = true;
+    }
+  }
+  if (hasToken) args.push(current);
+  return args;
+}
+
 function commandExists(command) {
-  if (!command || command.includes(path.sep)) return false;
+  return !!findInPath(command);
+}
+
+function findInPath(command) {
+  if (!command || command.includes('/') || command.includes('\\')) return '';
   const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
   const names = IS_WIN && !/\.(cmd|exe|bat)$/i.test(command)
     ? [`${command}.cmd`, `${command}.exe`, `${command}.bat`, command]
     : [command];
-  return pathDirs.some(dir => names.some(name => {
-    try { fs.accessSync(path.join(dir, name), fs.constants.X_OK); return true; } catch (_) { return false; }
-  }));
+  for (const dir of pathDirs) {
+    for (const name of names) {
+      const full = path.join(dir, name);
+      try {
+        fs.accessSync(full, fs.constants.X_OK);
+        if (fs.statSync(full).isFile()) return full;
+      } catch (_) {}
+    }
+  }
+  return '';
+}
+
+function expandHome(input) {
+  if (!input || input === '~') return HOME;
+  if (input.startsWith('~/') || input.startsWith('~\\')) return path.join(HOME, input.slice(2));
+  return input;
 }
 
 function executableExists(command) {
   if (!command) return false;
-  if (!command.includes(path.sep)) return commandExists(command);
-  try { fs.accessSync(command, fs.constants.X_OK); return true; } catch (_) { return false; }
+  const expanded = expandHome(command);
+  if (!expanded.includes('/') && !expanded.includes('\\')) return commandExists(expanded);
+  try {
+    fs.accessSync(expanded, fs.constants.X_OK);
+    return fs.statSync(expanded).isFile();
+  } catch (_) {
+    return false;
+  }
 }
 
 function customCommandFor(agentId) {
@@ -100,47 +200,57 @@ function customCommandFor(agentId) {
   }
 }
 
+function firstAvailable(candidates, source) {
+  const seen = new Set();
+  for (const c of candidates) {
+    if (!c || seen.has(c)) continue;
+    seen.add(c);
+    if (!c.includes('/') && !c.includes('\\')) {
+      const full = findInPath(c);
+      if (full) return { command: full, available: true, source: 'PATH' };
+      continue;
+    }
+    if (executableExists(c)) return { command: c, available: true, source };
+  }
+  return null;
+}
+
+/**
+ * 解析 Agent 可执行文件，优先级：
+ *   Web 设置里的自定义命令 > 本机首选命令（RCC_<AGENT>_PREFERRED）> <AGENT>_BIN 环境变量 > 内置候选路径 / PATH
+ */
 function resolveAgentBin(agentId) {
   const cfg = AGENTS[normalizeAgent(agentId)];
   const custom = customCommandFor(cfg.id);
   if (custom) {
+    const expanded = expandHome(custom);
     return {
-      command: custom,
-      available: executableExists(custom),
+      command: findInPath(expanded) || expanded,
+      available: executableExists(expanded),
       source: 'settings',
     };
   }
 
-  if (cfg.id === 'codex' && !IS_WIN && executableExists(BAIDU_CX_CODEX_BIN)) {
-    return {
-      command: BAIDU_CX_CODEX_BIN,
-      available: true,
-      source: 'known-path',
-    };
+  if (!IS_WIN) {
+    const preferred = firstAvailable(preferredCandidates(cfg.id), 'known-path');
+    if (preferred) return preferred;
   }
 
   const fromEnv = process.env[cfg.envVar];
+  if (fromEnv && executableExists(fromEnv)) {
+    return { command: expandHome(fromEnv), available: true, source: cfg.envVar };
+  }
+
+  const found = firstAvailable(IS_WIN ? cfg.windowsCandidates : cfg.unixCandidates, 'known-path');
+  if (found) return found;
+
   if (fromEnv) {
-    return {
-      command: fromEnv,
-      available: executableExists(fromEnv),
-      source: cfg.envVar,
-    };
+    return { command: expandHome(fromEnv), available: false, source: cfg.envVar };
   }
-
-  const candidates = IS_WIN ? cfg.windowsCandidates : cfg.unixCandidates;
-  for (const c of candidates) {
-    if (!c) continue;
-    if (!c.includes(path.sep)) {
-      if (commandExists(c)) return { command: c, available: true, source: 'PATH' };
-      continue;
-    }
-    try { fs.accessSync(c, fs.constants.X_OK); return { command: c, available: true, source: 'known-path' }; } catch (_) {}
-  }
-
+  const full = findInPath(cfg.command);
   return {
-    command: cfg.command,
-    available: commandExists(cfg.command),
+    command: full || cfg.command,
+    available: !!full,
     source: 'default',
   };
 }
@@ -206,6 +316,7 @@ module.exports = {
   PROXY_ENV_KEYS,
   DEFAULT_AGENT: normalizeAgent(DEFAULT_AGENT),
   normalizeAgent,
+  parseExtraArgs,
   resolveAgentBin,
   findAgentBin,
   getAgentStatuses,

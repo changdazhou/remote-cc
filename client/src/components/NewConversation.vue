@@ -33,7 +33,7 @@
             class="nc-input"
             placeholder="~/"
             spellcheck="false" autocorrect="off" autocapitalize="off"
-            @keyup.enter="start"
+            @keydown.enter="onEnterKey($event, start)"
           />
           <button class="nc-browse-btn" :class="{ active: dirPickerOpen }" title="选择目录" @click="toggleDirPicker">
             <AppIcon name="folder" />
@@ -57,7 +57,18 @@
           class="nc-input"
           :placeholder="namePlaceholder"
           spellcheck="false" autocorrect="off" autocapitalize="off"
-          @keyup.enter="start"
+          @keydown.enter="onEnterKey($event, start)"
+        />
+      </div>
+
+      <div class="nc-field">
+        <label class="nc-label">{{ t.launch_args }} <span class="nc-hint">({{ t.launch_args_hint }})</span></label>
+        <input
+          v-model="extraArgs"
+          class="nc-input"
+          :placeholder="argsPlaceholder"
+          spellcheck="false" autocorrect="off" autocapitalize="off"
+          @keydown.enter="onEnterKey($event, start)"
         />
       </div>
 
@@ -127,7 +138,16 @@
                   class="nc-input nc-input-sm"
                   :placeholder="shortBase(sess.cwd)"
                   spellcheck="false"
-                  @keyup.enter="startResume"
+                  @keydown.enter="onEnterKey($event, startResume)"
+                  @click.stop
+                />
+                <input
+                  v-model="extraArgs"
+                  class="nc-input nc-input-sm"
+                  :placeholder="`${t.launch_args}: ${argsPlaceholder}`"
+                  :title="t.launch_args_hint"
+                  spellcheck="false" autocorrect="off" autocapitalize="off"
+                  @keydown.enter="onEnterKey($event, startResume)"
                   @click.stop
                 />
                 <button class="nc-start nc-start-sm" :disabled="!canStart" @click.stop="startResume">{{ t.resume }} <AppIcon name="play" /></button>
@@ -220,12 +240,32 @@ function shortPath(p) {
   return p;
 }
 
+// 启动参数按 Agent 分别记住（仅当前页面有效），不同 Agent 的参数通常不通用
+const argsByAgent = reactive({});
+const extraArgs = computed({
+  get: () => argsByAgent[agent.value] || '',
+  set: (value) => { argsByAgent[agent.value] = value; },
+});
+const ARGS_PLACEHOLDERS = {
+  claude: '--model opus',
+  codex: '-m gpt-5 -c model_reasoning_effort="high"',
+  grok: '-m grok-4 --reasoning-effort high',
+};
+const argsPlaceholder = computed(() => ARGS_PLACEHOLDERS[agent.value] || '--model <name>');
+
+// 输入法组词时按回车只是上屏，不能触发启动
+function onEnterKey(e, action) {
+  if (e.isComposing || e.keyCode === 229) return;
+  e.preventDefault();
+  action();
+}
+
 function start() {
   if (!canStart.value) return;
   const dir  = workingDir.value.trim() || '~';
   const base = dir.split('/').filter(Boolean).pop() || 'root';
   const name = sessionName.value.trim() || base;
-  emit('start', { workingDir: dir, name, agent: agent.value });
+  emit('start', { workingDir: dir, name, agent: agent.value, extraArgs: extraArgs.value.trim() });
 }
 
 function toggleDirPicker() {
@@ -274,7 +314,7 @@ async function loadHistory(force = false) {
     const loadedProjects = await api.getProjects(agent.value);
     projects.value = loadedProjects;
     histLoaded = true;
-    if (agent.value === 'codex') await preloadCodexSessions(loadedProjects);
+    if (agent.value === 'codex' || agent.value === 'grok') await preloadAllSessions(loadedProjects);
   } catch (e) {
     histError.value = e.message;
   } finally {
@@ -315,14 +355,14 @@ async function ensureProjLoaded(id) {
   }
 }
 
-async function preloadCodexSessions(projectList) {
+async function preloadAllSessions(projectList) {
   if (!projectList.length) return;
   for (const proj of projectList) {
     expanded.add(proj.id);
     loadingProj.add(proj.id);
   }
   try {
-    const sessions = await api.getSessions('codex', agent.value);
+    const sessions = await api.getSessions(agent.value, agent.value);
     const byProject = Object.fromEntries(projectList.map(proj => [proj.id, []]));
     for (const sess of sessions) {
       if (!byProject[sess.projectId]) byProject[sess.projectId] = [];
@@ -357,7 +397,7 @@ function startResume() {
   const dir  = sess.cwd || '~';
   const base = shortBase(dir);
   const name = resumeName.value.trim() || base;
-  emit('start', { workingDir: dir, name, resumeSessionId: sess.sessionId, agent: agent.value });
+  emit('start', { workingDir: dir, name, resumeSessionId: sess.sessionId, agent: agent.value, extraArgs: extraArgs.value.trim() });
 }
 
 function shortBase(p) {
@@ -644,8 +684,9 @@ function fmtDate(iso) {
   font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--muted);
 }
 .nc-sess-actions {
-  display: flex; gap: 8px; align-items: center; margin-top: 8px;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;
 }
+.nc-sess-actions .nc-input-sm { min-width: 140px; }
 
 @media (max-width: 520px) {
   .nc-tabs { padding: 7px 10px; }

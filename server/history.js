@@ -3,18 +3,24 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { normalizeAgent } = require('./agent-config');
+const { readLocalAgentEnv } = require('./local-env');
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const CODEX_HOME_DIRS = uniquePaths([
   process.env.RCC_CODEX_HOME,
   process.env.CODEX_HOME,
-  path.join(os.homedir(), '.baidu-cx'),
+  readLocalAgentEnv().CODEX_HOME,
   path.join(os.homedir(), '.codex'),
+].filter(Boolean).map(expandHome));
+const GROK_HOME_DIRS = uniquePaths([
+  process.env.GROK_HOME,
+  path.join(os.homedir(), '.grok'),
 ].filter(Boolean).map(expandHome));
 const CODEX_HISTORY_CACHE_TTL_MS = positiveInt(process.env.RCC_HISTORY_CACHE_TTL_MS, 15000);
 const CODEX_SESSION_META_BYTES = positiveInt(process.env.RCC_CODEX_SESSION_META_BYTES, 64 * 1024);
 const CODEX_SESSION_META_LINES = 20;
 const CLAUDE_SESSION_META_BYTES = positiveInt(process.env.RCC_CLAUDE_SESSION_META_BYTES, 256 * 1024);
+const GROK_SUMMARY_MAX_BYTES = 1024 * 1024;
 
 let codexSessionsCache = { sessions: null, expiresAt: 0 };
 
@@ -46,7 +52,10 @@ function positiveInt(value, fallback) {
 }
 
 function getProjects(agent = 'claude') {
-  return normalizeAgent(agent) === 'codex' ? getCodexProjects() : getClaudeProjects();
+  const id = normalizeAgent(agent);
+  if (id === 'codex') return getCodexProjects();
+  if (id === 'grok') return getGrokProjects();
+  return getClaudeProjects();
 }
 
 function getClaudeProjects() {
@@ -73,7 +82,10 @@ function getClaudeProjects() {
 }
 
 function getSessions(projectId, agent = 'claude') {
-  return normalizeAgent(agent) === 'codex' ? getCodexSessions(projectId) : getClaudeSessions(projectId);
+  const id = normalizeAgent(agent);
+  if (id === 'codex') return getCodexSessions(projectId);
+  if (id === 'grok') return getGrokSessions(projectId);
+  return getClaudeSessions(projectId);
 }
 
 function listClaudeSessionFiles(projectId) {
@@ -140,7 +152,7 @@ function readClaudeSessionMeta(filePath, mtime) {
 }
 
 function readSession(sessionId, agent = 'claude') {
-  if (normalizeAgent(agent) === 'codex') return [];
+  if (normalizeAgent(agent) !== 'claude') return [];
   // search all project dirs for this session
   if (!fs.existsSync(CLAUDE_PROJECTS_DIR)) return [];
   const dirs = fs.readdirSync(CLAUDE_PROJECTS_DIR, { withFileTypes: true })
@@ -420,6 +432,119 @@ function normalizeCodexSession(session) {
 function codexProjectId(cwd) {
   const hash = crypto.createHash('sha1').update(cwd || '~').digest('hex').slice(0, 16);
   return `codex-${hash}`;
+}
+
+// ── Grok ──────────────────────────────────────────────────────────────────────
+// 目录结构：<GROK_HOME>/sessions/<URL 编码的 cwd>/<session-id>/summary.json
+
+function getGrokProjects() {
+  const byProject = new Map();
+  for (const session of buildGrokSessions()) {
+    const current = byProject.get(session.projectId) || {
+      id: session.projectId,
+      displayPath: session.cwd || '~',
+      sessionCount: 0,
+      lastModified: new Date(0).toISOString(),
+    };
+    current.sessionCount += 1;
+    if (new Date(session.lastModified) > new Date(current.lastModified)) current.lastModified = session.lastModified;
+    byProject.set(session.projectId, current);
+  }
+  return Array.from(byProject.values())
+    .sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+}
+
+function getGrokSessions(projectId) {
+  const sessions = buildGrokSessions();
+  if (projectId === 'grok') return sessions;
+  return sessions.filter(session => session.projectId === projectId);
+}
+
+function buildGrokSessions() {
+  const byId = new Map();
+  for (const home of GROK_HOME_DIRS) {
+    const root = path.join(home, 'sessions');
+    let groups = [];
+    try { groups = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { continue; }
+    for (const group of groups) {
+      if (!group.isDirectory()) continue;
+      const groupDir = path.join(root, group.name);
+      const groupCwd = grokGroupCwd(groupDir, group.name);
+      let entries = [];
+      try { entries = fs.readdirSync(groupDir, { withFileTypes: true }); } catch (_) { continue; }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const session = readGrokSession(path.join(groupDir, entry.name), entry.name, groupCwd);
+        if (!session) continue;
+        const prev = byId.get(session.sessionId);
+        if (!prev || new Date(session.lastModified) > new Date(prev.lastModified)) byId.set(session.sessionId, session);
+      }
+    }
+  }
+  return Array.from(byId.values())
+    .sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+}
+
+function grokGroupCwd(groupDir, name) {
+  try {
+    const recorded = fs.readFileSync(path.join(groupDir, '.cwd'), 'utf8').trim();
+    if (recorded) return recorded;
+  } catch (_) {}
+  try {
+    const decoded = decodeURIComponent(name);
+    if (path.isAbsolute(decoded) || /^[a-zA-Z]:[\\/]/.test(decoded)) return decoded;
+  } catch (_) {}
+  return '';
+}
+
+function readGrokSession(sessionDir, dirName, groupCwd) {
+  const summaryPath = path.join(sessionDir, 'summary.json');
+  let stat;
+  try { stat = fs.statSync(summaryPath); } catch (_) { return null; }
+  let summary = {};
+  if (stat.size <= GROK_SUMMARY_MAX_BYTES) {
+    try { summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8')) || {}; } catch (_) { summary = {}; }
+  }
+  const info = summary.info && typeof summary.info === 'object' ? summary.info : {};
+  const sessionId = firstString(info.id, info.session_id, info.sessionId, summary.session_id, summary.id) || dirName;
+  const cwd = firstString(info.cwd, info.working_dir, info.workingDir, info.workspace, summary.cwd) || groupCwd || '~';
+  const title = firstString(
+    summary.title,
+    summary.generated_title,
+    summary.session_summary,
+    summary.last_turn_summary,
+  );
+  const lastModified = toIsoDate(summary.updated_at) || toIsoDate(summary.created_at) || stat.mtime.toISOString();
+  const messageCount = Number(summary.num_chat_messages ?? summary.num_messages) || 0;
+  return {
+    sessionId,
+    projectId: grokProjectId(cwd),
+    lastModified,
+    lastMessage: title.slice(0, 100),
+    messageCount,
+    cwd,
+  };
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function toIsoDate(value) {
+  if (value === undefined || value === null || value === '') return '';
+  let date;
+  if (typeof value === 'number') date = new Date(value < 1e12 ? value * 1000 : value);
+  else if (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value)) return toIsoDate(Number(value));
+  else date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : '';
+}
+
+function grokProjectId(cwd) {
+  const hash = crypto.createHash('sha1').update(cwd || '~').digest('hex').slice(0, 16);
+  return `grok-${hash}`;
 }
 
 module.exports = { getProjects, getSessions, readSession };

@@ -21,13 +21,19 @@ function handleUnauthorized() {
   if (_onUnauthorized) _onUnauthorized();
 }
 
+function apiError(message, status = 0) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
 async function throwApiError(res) {
   let message = `HTTP ${res.status}`;
   try {
     const data = await res.clone().json();
     if (data?.error) message = data.error;
   } catch (_) {}
-  throw new Error(message);
+  throw apiError(message, res.status);
 }
 
 export async function login(username, password) {
@@ -68,11 +74,11 @@ async function apiFetch(path, opts = {}) {
       ...fetchOpts,
       headers: { ...authHeader(), ...(fetchOpts.headers || {}) },
     });
-    if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
+    if (res.status === 401) { handleUnauthorized(); throw apiError('Unauthorized', 401); }
     if (!res.ok) await throwApiError(res);
     return res.json();
   } catch (err) {
-    if (err?.name === 'AbortError') throw new Error('Request timeout');
+    if (err?.name === 'AbortError') throw apiError('Request timeout');
     throw err;
   } finally {
     if (timer) clearTimeout(timer);
@@ -126,19 +132,102 @@ function uploadFilenameHeaders(file) {
   };
 }
 
-async function uploadFile(path, file) {
-  const res = await fetch(BASE + `/api/fs/upload?path=${encodeURIComponent(path)}`, {
-    method: 'POST',
-    headers: {
+/**
+ * 用 XHR 直接发送 File/Blob：浏览器从磁盘流式读取，不会把整个文件读进内存，
+ * 同时可以拿到上传进度。onProgress(loaded, total)
+ */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024;
+const UPLOAD_LIMIT_MESSAGE = '文件超过 10 GB 上传上限';
+
+export function formatBytes(bytes) {
+  if (bytes == null || bytes === '' || !Number.isFinite(Number(bytes))) return '';
+  const n = Number(bytes);
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+}
+
+export function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '';
+  const s = Math.ceil(seconds);
+  if (s < 60) return `${s}秒`;
+  if (s < 3600) return `${Math.floor(s / 60)}分${String(s % 60).padStart(2, '0')}秒`;
+  return `${Math.floor(s / 3600)}小时${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}分`;
+}
+
+// 最近几秒的平均速度，避免瞬时速度跳动
+function createSpeedMeter(windowMs = 3000) {
+  const samples = [];
+  return (loaded) => {
+    const now = performance.now();
+    samples.push([now, loaded]);
+    while (samples.length > 2 && now - samples[0][0] > windowMs) samples.shift();
+    const [t0, l0] = samples[0];
+    return now > t0 ? (loaded - l0) / ((now - t0) / 1000) : 0;
+  };
+}
+
+function uploadWithProgress(url, file, { onProgress, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      reject(apiError(UPLOAD_LIMIT_MESSAGE, 413));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', BASE + url);
+    const headers = {
       ...authHeader(),
       'Content-Type': 'application/octet-stream',
       ...uploadFilenameHeaders(file),
-    },
-    body: await file.arrayBuffer(),
+    };
+    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value);
+    if (onProgress && xhr.upload) {
+      const measure = createSpeedMeter();
+      xhr.upload.onprogress = (e) => {
+        const total = e.lengthComputable ? e.total : file.size;
+        const speed = measure(e.loaded);
+        onProgress(e.loaded, total, { speed, eta: speed > 0 ? (total - e.loaded) / speed : NaN });
+      };
+    }
+    xhr.onload = () => {
+      let data = null;
+      try { data = JSON.parse(xhr.responseText || 'null'); } catch (_) {}
+      if (xhr.status === 401) {
+        handleUnauthorized();
+        reject(apiError('Unauthorized', 401));
+      } else if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        const message = xhr.status === 413 ? UPLOAD_LIMIT_MESSAGE
+          : xhr.status === 507 ? '服务器磁盘空间不足'
+          : (data?.error || `HTTP ${xhr.status}`);
+        reject(apiError(message, xhr.status));
+      }
+    };
+    xhr.onerror = () => reject(apiError('Network error'));
+    xhr.onabort = () => reject(apiError('Upload cancelled'));
+    if (signal) {
+      if (signal.aborted) { xhr.abort(); return; }
+      signal.addEventListener('abort', () => xhr.abort(), { once: true });
+    }
+    xhr.send(file);
   });
-  if (res.status === 401) { handleUnauthorized(); throw new Error('Unauthorized'); }
-  if (!res.ok) await throwApiError(res);
-  return res.json();
+}
+
+function uploadFile(path, file, options) {
+  return uploadWithProgress(`/api/fs/upload?path=${encodeURIComponent(path)}`, file, options);
+}
+
+function uploadAttachment(file, options) {
+  return uploadWithProgress('/api/upload', file, options);
+}
+
+// 下载交给浏览器原生处理（流式写盘，不占用页面内存），token 走 query 参数
+function downloadUrl(path) {
+  return `${BASE}/api/fs/download?path=${encodeURIComponent(path)}&token=${encodeURIComponent(getToken())}`;
 }
 
 export const api = {
@@ -224,6 +313,8 @@ export const api = {
       body: JSON.stringify({ path, name }),
     }),
     upload: uploadFile,
+    uploadAttachment,
+    downloadUrl,
     download: (path) => apiFetchBlob(`/api/fs/download?path=${encodeURIComponent(path)}`),
   },
 };

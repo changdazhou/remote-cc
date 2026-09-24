@@ -10,6 +10,7 @@
       :theme="theme"
       symbol-mode="shell"
       @input="onInput"
+      @response="sendInput"
       @resize="onResize"
       @paste="onPaste"
     />

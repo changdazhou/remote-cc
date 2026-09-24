@@ -100,6 +100,8 @@ GET /api/session-log/:sessionId
 ```
 GET /api/projects?agent=claude
 GET /api/projects?agent=codex
+GET /api/projects?agent=grok
+GET /api/projects?agent=grok
 ```
 
 #### 获取项目下的历史会话
@@ -153,14 +155,20 @@ POST /api/fs/mkdir
 POST /api/fs/upload?path=/target/dir
 ```
 
-请求：`application/octet-stream`，文件名放在 `X-Filename` header。
+请求：`application/octet-stream`，请求体为文件原始字节，文件名 URL 编码后放在 `X-Filename-Encoded`（兼容 `X-Filename`）header。服务端流式写入同目录临时文件，完成后重命名；同名文件自动加 `-1`、`-2` 后缀，中断的上传不会留下残缺文件。单个文件上限 10 GB，超出返回 `413`；声明大小超过磁盘剩余空间返回 `507`。
 响应：`{ path, name, type, size, mtime, mode }`
+
+```
+POST /api/upload
+```
+
+终端粘贴/上传的图片和文件，保存到 `~/.rcc/uploads/`，响应 `{ path, filename }`。大小限制同上。
 
 ```
 GET /api/fs/download?path=/path/to/file
 ```
 
-响应：二进制文件流。
+响应：二进制文件流（`Content-Disposition: attachment`）。除 `Authorization` header 外也支持 `?token=`，便于浏览器直接下载。
 
 #### HTTP 终端回退（需认证）
 
@@ -198,7 +206,7 @@ GET  /api/shell/poll?cursor=0&wait=20000
 
 | 消息类型 | 说明 | 参数 |
 |---------|------|------|
-| `start` | 创建新会话 | `workingDir`, `name`, `resumeSessionId?`, `cols`, `rows` |
+| `start` | 创建新会话。`agent` 为 `claude` / `codex` / `grok`；`extraArgs` 为透传给 Agent CLI 的参数字符串（按 shell 规则拆分，不做变量展开）；相同 `requestId` 的重复请求会接入已创建的会话 | `workingDir`, `name`, `agent?`, `resumeSessionId?`, `extraArgs?`, `requestId?`, `cols`, `rows` |
 | `attach` | 接入已有会话 | `sessionId` |
 | `resize` | 调整终端尺寸 | `cols`, `rows` |
 | `shell_start` | 接入共享前台终端，必要时创建 | `cwd`, `cols`, `rows` |
@@ -392,14 +400,20 @@ Response: `{ path, name, type: "dir", size, mtime, mode }`
 POST /api/fs/upload?path=/target/dir
 ```
 
-Request: `application/octet-stream`, with the filename in the `X-Filename` header.
+Request: `application/octet-stream` with the raw file bytes as the body and the URL-encoded filename in the `X-Filename-Encoded` header (`X-Filename` also accepted). The server streams into a temporary file in the same directory and renames it when complete; name clashes get `-1`, `-2` suffixes and interrupted uploads leave no partial file. Max 10 GB per file (`413` beyond that); `507` if the declared size exceeds free disk space.
 Response: `{ path, name, type, size, mtime, mode }`
+
+```
+POST /api/upload
+```
+
+Images/files pasted or uploaded from the terminal are saved to `~/.rcc/uploads/`. Response: `{ path, filename }`. Same size limits apply.
 
 ```
 GET /api/fs/download?path=/path/to/file
 ```
 
-Response: binary file stream.
+Response: binary file stream (`Content-Disposition: attachment`). Besides the `Authorization` header, `?token=` is accepted so browsers can download directly.
 
 #### HTTP Terminal Fallback (auth required)
 
@@ -437,7 +451,7 @@ On connect, the server immediately sends: `{"type":"session_list","sessions":[..
 
 | Message type | Description | Parameters |
 |-------------|-------------|------------|
-| `start` | Create new session | `workingDir`, `name`, `resumeSessionId?`, `cols`, `rows` |
+| `start` | Create new session. `agent` is `claude` / `codex` / `grok`; `extraArgs` is a string of args passed to the agent CLI (split with shell quoting rules, no variable expansion); repeated requests with the same `requestId` attach to the session already created | `workingDir`, `name`, `agent?`, `resumeSessionId?`, `extraArgs?`, `requestId?`, `cols`, `rows` |
 | `attach` | Attach to existing session | `sessionId` |
 | `resize` | Resize terminal | `cols`, `rows` |
 | `shell_start` | Attach to the shared foreground terminal, creating it if needed | `cwd`, `cols`, `rows` |

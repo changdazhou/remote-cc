@@ -14,7 +14,7 @@ const {
   killSessionHttp, deleteSessionHttp, renameSessionHttp,
   startShellHttp, inputShellHttp, resizeShellHttp, pollShellHttp, killShellHttp,
 } = require('./pty-manager');
-const { listDir, readFilePreview, statFile, createDirectory, writeUploadedFile, readDownloadFile, decodeUploadFilename } = require('./fs-handler');
+const { listDir, readFilePreview, statFile, createDirectory, handleFsUploadRequest, handleAttachmentUploadRequest, handleFsDownloadRequest } = require('./fs-handler');
 const { getSettingsHandler, saveSettingsHandler } = require('./web-settings');
 
 const PORT = parseInt(process.env.PORT || 3000);
@@ -91,26 +91,7 @@ const UPLOAD_DIR = path.join(RCC_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 app.post('/api/upload', (req, res) => {
-  const contentType = req.headers['content-type'] || '';
-  // 支持两种方式：multipart/form-data 和 application/octet-stream
-  const uploadName = decodeUploadFilename(req.headers['x-filename-encoded'] || req.headers['x-filename'] || 'image.png', 'image.png');
-  const ext = uploadName
-    .replace(/[^a-zA-Z0-9._-]/g, '_')
-    .match(/\.[a-zA-Z0-9]+$/)?.[0] || '.png';
-  const filename = `${uuidv4()}${ext}`;
-  const filepath = path.join(UPLOAD_DIR, filename);
-
-  const chunks = [];
-  req.on('data', c => chunks.push(c));
-  req.on('end', () => {
-    try {
-      fs.writeFileSync(filepath, Buffer.concat(chunks));
-      res.json({ path: filepath, filename });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-  req.on('error', e => res.status(500).json({ error: e.message }));
+  handleAttachmentUploadRequest(req, res, UPLOAD_DIR, req.headers['x-filename-encoded'] || req.headers['x-filename'] || 'image.png');
 });
 
 app.get('/api/agents',                 (req, res) => { try { res.set('Cache-Control', 'no-store').json(getAgentStatuses()); } catch (e) { res.status(500).json({ error: e.message }); } });
@@ -240,35 +221,12 @@ app.post('/api/fs/mkdir', (req, res) => {
 });
 
 app.post('/api/fs/upload', (req, res) => {
-  const chunks = [];
-  req.on('data', c => chunks.push(c));
-  req.on('end', () => {
-    try {
-      const result = writeUploadedFile(
-        req.query.path || '/',
-        req.headers['x-filename-encoded'] || req.headers['x-filename'] || 'upload.bin',
-        Buffer.concat(chunks)
-      );
-      res.json(result);
-    } catch (e) {
-      res.status(e.message.startsWith('Access denied') ? 403 : 400).json({ error: e.message });
-    }
-  });
-  req.on('error', e => res.status(500).json({ error: e.message }));
+  handleFsUploadRequest(req, res, req.query.path || '/', req.headers['x-filename-encoded'] || req.headers['x-filename'] || 'upload.bin');
 });
 
 app.get('/api/fs/download', (req, res) => {
-  try {
-    const file = readDownloadFile(req.query.path || '');
-    res.setHeader('content-type', 'application/octet-stream');
-    res.setHeader('content-length', file.size);
-    res.setHeader('content-disposition', `attachment; filename="${file.name.replace(/"/g, '_')}"; filename*=UTF-8''${encodeURIComponent(file.name)}`);
-    res.end(file.content);
-  } catch (e) {
-    res.status(e.message.startsWith('Access denied') ? 403 : 400).json({ error: e.message });
-  }
+  handleFsDownloadRequest(req, res, req.query.path || '');
 });
-
 
 // 未匹配的 /api/* 返回 404
 app.all('/api/*', (req, res) => {
@@ -296,6 +254,9 @@ wss.on('connection', (ws) => {
   ws.on('close',   ()   => { closeWS(wsId); unregisterWS(wsId); });
   ws.on('error',   err  => { console.error(`WS [${wsId}]:`, err.message); closeWS(wsId); unregisterWS(wsId); });
 });
+
+// 大文件上传/下载可能持续很久，不能套用默认的 5 分钟整请求超时
+server.requestTimeout = 0;
 
 server.listen(PORT, () => {
   console.log(`RemoteCC  http://0.0.0.0:${PORT}`);

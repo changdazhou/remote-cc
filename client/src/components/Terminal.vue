@@ -70,8 +70,35 @@
       <AppIcon name="copy" />
     </button>
 
-    <span v-if="lastUploadPath" class="img-path-hint" :title="lastUploadPath">
-      <AppIcon name="check" /> {{ shortPath(lastUploadPath) }}
+    <button
+      v-if="scrolledAway && !mobileCopyMode"
+      class="jump-bottom-btn"
+      :class="{ 'has-new': hasNewOutput }"
+      title="回到底部"
+      @click.stop="jumpToBottom"
+    >
+      <AppIcon name="chevron" />
+      <span v-if="hasNewOutput">新输出</span>
+    </button>
+
+    <div v-if="uploading && termUpload.name" class="img-upload-progress">
+      <div class="iup-row">
+        <AppIcon name="spinner" spin />
+        <span class="iup-name" :title="termUpload.name">{{ termUpload.name }}</span>
+        <span>{{ termUpload.percent }}%{{ termUpload.queued ? ` +${termUpload.queued}` : '' }}</span>
+        <button class="iup-cancel" title="取消上传" @click.stop="cancelTerminalUpload"><AppIcon name="close" /></button>
+      </div>
+      <div class="iup-track"><div class="iup-bar" :style="{ width: termUpload.percent + '%' }"></div></div>
+      <div class="iup-detail">
+        <span>{{ formatBytes(termUpload.loaded) }} / {{ formatBytes(termUpload.size) }}</span>
+        <span v-if="termUpload.size && termUpload.loaded >= termUpload.size">服务器处理中…</span>
+        <span v-else-if="termUpload.speed > 0">{{ formatBytes(termUpload.speed) }}/s · 剩余 {{ formatDuration(termUpload.eta) }}</span>
+      </div>
+    </div>
+    <span v-else-if="uploadHint.text" class="img-path-hint" :class="{ error: uploadHint.error }" :title="uploadHint.title">
+      <AppIcon v-if="uploading && !uploadHint.error" name="spinner" spin />
+      <AppIcon v-else :name="uploadHint.error ? 'close' : 'check'" />
+      {{ uploadHint.text }}
     </span>
 
     <SymbolBar
@@ -91,7 +118,7 @@
           @click.stop
         >
           <input type="file" accept="image/*,*/*" multiple style="display:none"
-            @change="onFileSelect" :disabled="uploading" />
+            @change="onFileSelect" />
           <AppIcon v-if="!uploading" name="upload" />
           <AppIcon v-else name="spinner" spin />
         </label>
@@ -125,18 +152,21 @@ import { computed, ref, reactive, onMounted, onBeforeUnmount, watch, nextTick } 
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import SymbolBar from './SymbolBar.vue';
 import AppIcon from './AppIcon.vue';
+import { api, formatBytes, formatDuration } from '../api/index.js';
 import { THEMES } from '../themes.js';
 import { settings, FONT_FAMILIES } from '../settings.js';
+import { recentlyActive } from '../user-activity.js';
 
 const props = defineProps({
   theme: { type: String, default: 'cyber' },
   symbolMode: { type: String, default: 'auto' },
   optimisticEcho: { type: Boolean, default: false },
 });
-const emit = defineEmits(['input', 'resize', 'paste']);
+const emit = defineEmits(['input', 'resize', 'paste', 'response']);
 
 const termRef = ref(null);
 const wrapRef = ref(null);
@@ -171,7 +201,12 @@ const mobileCopyTextStyle = computed(() => ({
 // ── 图片/文件上传 ─────────────────────────────────────────────────────────────
 const uploading = ref(false);
 const dragOver  = ref(false);
-const lastUploadPath = ref('');
+const uploadHint = reactive({ text: '', title: '', error: false });
+let uploadHintTimer = null;
+const uploadQueue = [];
+const EMPTY_TERM_UPLOAD = { name: '', percent: 0, loaded: 0, size: 0, speed: 0, eta: NaN, queued: 0 };
+const termUpload = reactive({ ...EMPTY_TERM_UPLOAD });
+let termUploadAbort = null;
 const mobileEnterSends = computed(() => settings.mobileKeyboardEnter !== 'newline');
 const mobileEnterKeyHint = computed(() => mobileEnterSends.value ? 'send' : 'enter');
 
@@ -212,46 +247,65 @@ function shortPath(p) {
   return p.split('/').slice(-2).join('/');
 }
 
-function uploadFilenameHeaders(file) {
-  const encoded = encodeURIComponent(file?.name || 'upload.bin');
-  return {
-    'X-Filename': encoded,
-    'X-Filename-Encoded': encoded,
-  };
+function setUploadHint(text, { title = text, error = false, autoHideMs = 0 } = {}) {
+  clearTimeout(uploadHintTimer);
+  uploadHint.text = text;
+  uploadHint.title = title;
+  uploadHint.error = error;
+  if (autoHideMs) uploadHintTimer = setTimeout(() => { uploadHint.text = ''; }, autoHideMs);
 }
 
-async function uploadFile(file) {
+// 多个文件排队依次上传，保证插入终端的路径顺序与选择顺序一致
+function uploadFile(file) {
   if (!file) return;
+  uploadQueue.push(file);
+  if (!uploading.value) drainUploadQueue();
+}
+
+async function drainUploadQueue() {
   uploading.value = true;
-  lastUploadPath.value = '';
   try {
-    const buf = await file.arrayBuffer();
-    const res = await fetch('/api/upload', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('rcc_token') || ''}`,
-        'Content-Type': 'application/octet-stream',
-        ...uploadFilenameHeaders(file),
-      },
-      body: buf,
-    });
-    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-    const { path: filePath } = await res.json();
-    lastUploadPath.value = filePath;
-    emit('input', filePath + ' ');
-  } catch (e) {
-    console.error('Upload error:', e);
+    while (uploadQueue.length) {
+      const file = uploadQueue.shift();
+      const label = file.name || 'image';
+      const abort = new AbortController();
+      termUploadAbort = abort;
+      Object.assign(termUpload, { ...EMPTY_TERM_UPLOAD, name: label, size: file.size, queued: uploadQueue.length });
+      try {
+        const { path: filePath } = await api.fs.uploadAttachment(file, {
+          signal: abort.signal,
+          onProgress: (loaded, total, { speed, eta }) => {
+            Object.assign(termUpload, {
+              percent: total ? Math.min(100, Math.floor(loaded / total * 100)) : 0,
+              loaded, size: total, speed, eta, queued: uploadQueue.length,
+            });
+          },
+        });
+        setUploadHint(shortPath(filePath), { title: filePath, autoHideMs: 8000 });
+        emit('input', filePath + ' ');
+      } catch (e) {
+        if (abort.signal.aborted) setUploadHint('已取消上传', { autoHideMs: 3000 });
+        else setUploadHint(`上传失败: ${label} (${e?.message || e})`, { error: true, autoHideMs: 8000 });
+      }
+    }
   } finally {
+    termUploadAbort = null;
+    Object.assign(termUpload, EMPTY_TERM_UPLOAD);
     uploading.value = false;
     // 上传完成后立即把焦点还给终端
     nextTick(() => focusTerm());
   }
 }
 
+function cancelTerminalUpload() {
+  uploadQueue.length = 0;
+  termUploadAbort?.abort();
+}
+
 async function onFileSelect(e) {
   const files = Array.from(e.target.files || []);
   e.target.value = '';
-  for (const f of files) await uploadFile(f);
+  files.forEach(uploadFile);
 }
 
 function onDrop(e) {
@@ -292,6 +346,8 @@ let nativePasteFallbackTimer = null;
 
 let term, fitAddon, resizeObserver, resizeTimer;
 let lastW = 0, lastH = 0;
+let fontsCleanup = null;
+let fontRemeasureTimer = null;
 let selectionDisposable = null;
 let mobileMediaQuery = null;
 let mobileMediaQueryCleanup = null;
@@ -311,13 +367,23 @@ let optimisticEchoPendingAt = 0;
 
 // ── 自动锁底 + 上划暂停更新 ──────────────────────────────────────────────────
 let userScrolled = false;       // 用户是否主动上划
-let scrollResumeTimer = null;   // 停止滑动后恢复锁底的计时器
+const scrolledAway = ref(false); // userScrolled 的响应式副本，控制「回到底部」按钮
+const hasNewOutput = ref(false); // 上划期间是否来了新输出
 let autoScrollTimer = null;
+let scrollIdleTimer = null;      // 上划后无操作一段时间自动回到底部
+const SCROLL_IDLE_RESUME_MS = 10000;
+let lastViewportY = 0;
+let lastTouchY = null;
+let touchSamples = [];           // 最近的触摸位置，用于计算松手时的惯性速度
+let inertiaRaf = 0;
+let webglAddon = null;
 let userScrollIntentUntil = 0;   // 只有用户输入触发的滚动才暂停锁底
 let autoScrollUntil = 0;         // 程序写入触发的滚动不应暂停锁底
 const pendingWrites = [];        // 用户上划时缓存的输出
+let pendingBytes = 0;
+const PENDING_MAX_BYTES = 4 * 1024 * 1024;
 let boundViewport = null;
-const SCROLL_RESUME_DELAY = 5000;
+let boundScrollRoot = null;
 const TERMINAL_SELECTION_BG = 'rgba(37, 99, 235, 0.82)';
 const TERMINAL_SELECTION_FG = '#FFFFFF';
 const OPTIMISTIC_ECHO_TTL = 2500;
@@ -332,65 +398,201 @@ function updateMobileUi() {
   isMobileUi.value = isMobileViewport();
 }
 
-// 检测用户是否滑到底部附近（20px 内认为在底部）
+function setUserScrolled(value) {
+  userScrolled = value;
+  scrolledAway.value = value;
+  if (value) {
+    scheduleIdleResume();
+  } else {
+    hasNewOutput.value = false;
+    clearTimeout(scrollIdleTimer);
+  }
+}
+
+function scheduleIdleResume() {
+  clearTimeout(scrollIdleTimer);
+  scrollIdleTimer = setTimeout(() => {
+    if (!userScrolled) return;
+    // 复制模式或正在选中文字时不能把视图拉走
+    if (mobileCopyMode.value || term?.hasSelection?.()) {
+      scheduleIdleResume();
+      return;
+    }
+    setUserScrolled(false);
+    flushPending();
+    scrollToBottomSoon();
+  }, SCROLL_IDLE_RESUME_MS);
+}
+
+// 以 xterm 缓冲区状态判断是否在底部：DOM 的 scrollHeight 要到下一帧渲染才更新，快速输出时会误判
 function isNearBottom() {
   if (!term) return true;
+  const buf = term.buffer?.active;
+  if (buf) return buf.viewportY >= buf.baseY;
   const vp = term.element?.querySelector('.xterm-viewport');
   if (!vp) return true;
-  return vp.scrollHeight - vp.scrollTop - vp.clientHeight < 20;
+  return vp.scrollHeight - vp.scrollTop - vp.clientHeight < 2;
+}
+
+// 只有普通缓冲区有可回看的历史；全屏程序或开启鼠标上报时滚轮交给程序
+function canScrollBack() {
+  const buf = term?.buffer?.active;
+  if (!buf || buf.type !== 'normal' || buf.baseY <= 0) return false;
+  return (term.modes?.mouseTrackingMode || 'none') === 'none';
 }
 
 function onViewportScroll() {
-  const now = Date.now();
-  if (isNearBottom() && !mobileCopyMode.value) {
-    // 回到底部 → 恢复自动跟随，冲刷缓存
-    userScrolled = false;
-    clearTimeout(scrollResumeTimer);
-    flushPending();
-  } else if (now < userScrollIntentUntil) {
-    // 上划 → 暂停自动更新
-    userScrolled = true;
-    scheduleScrollResume();
-  } else if (now < autoScrollUntil) {
+  if (mobileCopyMode.value) return;
+  const y = term?.buffer?.active?.viewportY ?? 0;
+  const movedUp = y < lastViewportY;
+  lastViewportY = y;
+  if (Date.now() < userScrollIntentUntil) {
+    if (movedUp) setUserScrolled(true);
+    else if (isNearBottom() && userScrolled) {
+      // 用户自己滑回底部 → 恢复自动跟随，冲刷缓存
+      setUserScrolled(false);
+      flushPending();
+    }
+    if (userScrolled) scheduleIdleResume();
     return;
-  } else {
-    userScrolled = true;
-    scheduleScrollResume();
+  }
+  if (isNearBottom()) {
+    if (userScrolled) { setUserScrolled(false); flushPending(); }
+  } else if (!userScrolled && Date.now() >= autoScrollUntil) {
+    // 布局变化（键盘弹出、缩放、字体加载）引起的滚动不算用户上划，重新贴底
+    scrollToBottomSoon();
   }
 }
 
 function markUserScrollIntent() {
   userScrollIntentUntil = Date.now() + (isMobileViewport() ? 4000 : 2500);
-  scheduleScrollResume();
+  if (userScrolled) scheduleIdleResume();
 }
 
-function scheduleScrollResume() {
-  clearTimeout(scrollResumeTimer);
-  scrollResumeTimer = setTimeout(() => {
-    if (mobileCopyMode.value) return;
-    userScrolled = false;
-    flushPending();
-    scrollToBottomSoon();
-  }, SCROLL_RESUME_DELAY);
+// 往上看历史：立即暂停跟随，不等滚动事件，避免刚离开底部就被新输出拉回去
+function beginScrollBack() {
+  markUserScrollIntent();
+  if (canScrollBack()) setUserScrolled(true);
+}
+
+function onRootWheel(e) {
+  if (e.deltaY < 0) beginScrollBack();
+  else markUserScrollIntent();
+}
+
+function onRootTouchStart(e) {
+  stopInertia();
+  lastTouchY = e.touches?.[0]?.clientY ?? null;
+  touchSamples = lastTouchY == null ? [] : [[performance.now(), lastTouchY]];
+  if (userScrolled) scheduleIdleResume();
+}
+
+function onRootTouchMove(e) {
+  const y = e.touches?.[0]?.clientY;
+  if (y == null) return;
+  const dy = lastTouchY == null ? 0 : y - lastTouchY;
+  lastTouchY = y;
+  const now = performance.now();
+  touchSamples.push([now, y]);
+  while (touchSamples.length > 2 && now - touchSamples[0][0] > 100) touchSamples.shift();
+  // 手指下移 = 内容往上翻
+  if (dy > 2) beginScrollBack();
+  else markUserScrollIntent();
+}
+
+// xterm 接管了触摸滚动（没有原生惯性），松手后按手指速度继续减速滚动
+function onRootTouchEnd() {
+  lastTouchY = null;
+  const samples = touchSamples;
+  touchSamples = [];
+  if (samples.length < 2 || !boundViewport || !canScrollBack()) return;
+  const [t0, y0] = samples[0];
+  const [t1, y1] = samples[samples.length - 1];
+  if (performance.now() - t1 > 60 || t1 <= t0) return;
+  const velocity = (y0 - y1) / (t1 - t0);  // px/ms，正数 = 往下滚
+  if (Math.abs(velocity) > 0.25) startInertia(velocity);
+}
+
+function startInertia(initialVelocity) {
+  stopInertia();
+  const vp = boundViewport;
+  let velocity = Math.max(-6, Math.min(6, initialVelocity));
+  let last = performance.now();
+  const step = (now) => {
+    const dt = Math.min(now - last, 32);
+    last = now;
+    const before = vp.scrollTop;
+    markUserScrollIntent();
+    vp.scrollTop = before + velocity * dt;
+    velocity *= Math.pow(0.95, dt / 16);
+    if (Math.abs(velocity) < 0.03 || vp.scrollTop === before || boundViewport !== vp) {
+      inertiaRaf = 0;
+      return;
+    }
+    inertiaRaf = requestAnimationFrame(step);
+  };
+  inertiaRaf = requestAnimationFrame(step);
+}
+
+function stopInertia() {
+  if (inertiaRaf) cancelAnimationFrame(inertiaRaf);
+  inertiaRaf = 0;
+}
+
+// DOM 渲染器由浏览器排版文字、另画一层选区，二者宽度总有误差；WebGL 按单元格绘制，天然对齐且滚动更流畅。
+// 浏览器同时可用的 WebGL 上下文有限，只给可见的终端开启。
+function enableWebgl() {
+  if (webglAddon || !term) return;
+  try {
+    const addon = new WebglAddon();
+    addon.onContextLoss(() => disableWebgl());
+    term.loadAddon(addon);
+    webglAddon = addon;
+  } catch (_) {
+    webglAddon = null;
+  }
+}
+
+function disableWebgl() {
+  const addon = webglAddon;
+  webglAddon = null;
+  try { addon?.dispose(); } catch (_) {}
+}
+
+// 拖动滚动条或在终端里按下鼠标（选中文字）都算操作
+function onRootMouseDown(e) {
+  if (e.target === boundViewport) markUserScrollIntent();
+  else if (userScrolled) scheduleIdleResume();
 }
 
 function bindViewport(vp) {
   if (!vp || boundViewport === vp) return;
   unbindViewport();
   boundViewport = vp;
+  // 滚轮/触摸的事件目标通常是 .xterm-screen 而不是 viewport，要在 xterm 根元素上监听
+  boundScrollRoot = term?.element || vp.parentElement || vp;
+  lastViewportY = term?.buffer?.active?.viewportY ?? 0;
   vp.addEventListener('scroll', onViewportScroll, { passive: true });
-  vp.addEventListener('wheel', markUserScrollIntent, { passive: true });
-  vp.addEventListener('touchstart', markUserScrollIntent, { passive: true });
-  vp.addEventListener('touchmove', markUserScrollIntent, { passive: true });
+  boundScrollRoot.addEventListener('mousedown', onRootMouseDown, { passive: true, capture: true });
+  boundScrollRoot.addEventListener('wheel', onRootWheel, { passive: true, capture: true });
+  boundScrollRoot.addEventListener('touchstart', onRootTouchStart, { passive: true, capture: true });
+  boundScrollRoot.addEventListener('touchmove', onRootTouchMove, { passive: true, capture: true });
+  boundScrollRoot.addEventListener('touchend', onRootTouchEnd, { passive: true, capture: true });
+  boundScrollRoot.addEventListener('touchcancel', onRootTouchEnd, { passive: true, capture: true });
 }
 
 function unbindViewport() {
   if (!boundViewport) return;
   boundViewport.removeEventListener('scroll', onViewportScroll);
-  boundViewport.removeEventListener('wheel', markUserScrollIntent);
-  boundViewport.removeEventListener('touchstart', markUserScrollIntent);
-  boundViewport.removeEventListener('touchmove', markUserScrollIntent);
+  boundScrollRoot?.removeEventListener('mousedown', onRootMouseDown, { capture: true });
+  boundScrollRoot?.removeEventListener('wheel', onRootWheel, { capture: true });
+  boundScrollRoot?.removeEventListener('touchstart', onRootTouchStart, { capture: true });
+  boundScrollRoot?.removeEventListener('touchmove', onRootTouchMove, { capture: true });
+  boundScrollRoot?.removeEventListener('touchend', onRootTouchEnd, { capture: true });
+  boundScrollRoot?.removeEventListener('touchcancel', onRootTouchEnd, { capture: true });
+  stopInertia();
   boundViewport = null;
+  boundScrollRoot = null;
 }
 
 function scrollToBottomSoon() {
@@ -405,6 +607,7 @@ function scrollToBottomSoon() {
 
 function flushPending() {
   if (pendingWrites.length === 0) return;
+  pendingBytes = 0;
   const batch = compactWriteItems(pendingWrites.splice(0));
   let remaining = batch.length;
   batch.forEach(item => writeToTerminal(item.data, { suppressInput: item.suppressInput }, () => {
@@ -475,11 +678,15 @@ function smartWrite(data, options = {}) {
   const output = stripOptimisticEcho(data, options);
   if (!output) return;
   const item = { data: output, suppressInput: Boolean(options.suppressInput) };
+  if (userScrolled || mobileCopyMode.value) hasNewOutput.value = true;
   if (mobileCopyMode.value || (isMobileViewport() && userScrolled)) {
-    // 超出上限（跟 scrollback 一致）时丢弃最老的，保留最新
     pendingWrites.push(item);
-    const max = settings.scrollback || 5000;
-    if (pendingWrites.length > max) pendingWrites.shift();
+    pendingBytes += output.length;
+    // 缓存过多时不能丢弃中间片段（会打乱终端控制序列），直接恢复跟随并全部写入
+    if (pendingBytes > PENDING_MAX_BYTES && !mobileCopyMode.value) {
+      setUserScrolled(false);
+      flushPending();
+    }
   } else {
     // xterm write is async; scroll after render so mobile Codex output stays pinned.
     writeToTerminal(output, options, scrollToBottomSoon);
@@ -488,8 +695,7 @@ function smartWrite(data, options = {}) {
 
 function resumeOutputForInput() {
   if (mobileCopyMode.value) return;
-  userScrolled = false;
-  clearTimeout(scrollResumeTimer);
+  setUserScrolled(false);
   if (pendingWrites.length > 0) flushPending();
   else scrollToBottomSoon();
 }
@@ -529,6 +735,18 @@ function beginReplay() {
 function endReplay() {
   replaySuppressDepth = Math.max(0, replaySuppressDepth - 1);
   markTerminalResponseSuppression(300);
+}
+
+// 程序查询终端颜色（OSC 10/11/4）、光标位置、设备属性时由 xterm 应答，Agent 靠这些选配色。
+// 多个设备连同一会话时都会应答，重复的应答会被当成输入，所以只让正在使用的设备应答。
+const TERMINAL_RESPONSE_ACTIVE_MS = 5 * 60 * 1000;
+function canAnswerTerminalQueries() {
+  if (suppressingTerminalResponses() || !lastW || !lastH) return false;
+  if (typeof document !== 'undefined') {
+    if (document.visibilityState === 'hidden') return false;
+    if (typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
+  }
+  return recentlyActive(TERMINAL_RESPONSE_ACTIVE_MS);
 }
 
 function suppressingTerminalResponses() {
@@ -660,7 +878,7 @@ onMounted(() => {
     cursorBlink: settings.cursorBlink,
     cursorStyle: settings.cursorStyle,
     scrollback:  settings.scrollback,
-    smoothScrollDuration: 80,   // 丝滑滚动 80ms
+    smoothScrollDuration: 0,    // 每个滚轮事件都做动画会让触控板滚动发粘
     allowProposedApi: true,
   });
 
@@ -668,6 +886,7 @@ onMounted(() => {
   term.loadAddon(fitAddon);
   term.loadAddon(new WebLinksAddon());
   term.open(termRef.value);
+  if (termRef.value?.offsetWidth && termRef.value?.offsetHeight) enableWebgl();
   configureInputMode(termRef.value?.querySelector('.xterm-helper-textarea'));
   selectionDisposable = term.onSelectionChange(() => {
     terminalSelection.value = term.getSelection();
@@ -699,7 +918,14 @@ onMounted(() => {
   term.onData(data => {
     const shouldSuppress = suppressingTerminalResponses();
     const input = stripTerminalAutoResponses(data, { holdPartial: shouldSuppress });
-    if (!input) return;
+    if (!input) {
+      // 纯终端应答：不算用户输入，不回显、不拉回底部、不记入当前行
+      if (data && !shouldSuppress && canAnswerTerminalQueries()) {
+        resetTerminalAutoResponseFilter();
+        emit('response', data);
+      }
+      return;
+    }
     resumeOutputForInput();
     echoLocalInput(input);
     emit('input', input);
@@ -762,26 +988,51 @@ onMounted(() => {
     for (const entry of entries) {
       const { width, height } = entry.contentRect;
       if (width === lastW && height === lastH) continue;
+      const wasHidden = !lastW || !lastH;
       lastW = width; lastH = height;
-      if (width > 0 && height > 0) {
+      if (!width || !height) {
+        clearTimeout(resizeTimer);
+        disableWebgl();
+      } else {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
-          fitAddon.fit();
-          emit('resize', { cols: term.cols, rows: term.rows });
+          // 隐藏（v-show）期间测出的字宽不可靠，重新显示时重新测量
+          if (wasHidden) {
+            enableWebgl();
+            remeasureFont({ forceResize: true });
+          }
+          else {
+            fitAddon.fit();
+            emit('resize', { cols: term.cols, rows: term.rows });
+          }
           if (!userScrolled && !mobileCopyMode.value) scrollToBottomSoon();
         }, 80);
       }
     }
   });
   resizeObserver.observe(wrapRef.value);
+
+  // 网页字体异步加载：终端先按后备字体测了字宽，字体换上后必须重测，否则选区和文字宽度对不上
+  const fonts = typeof document !== 'undefined' ? document.fonts : null;
+  if (fonts) {
+    const onFontsLoaded = () => scheduleFontRemeasure();
+    fonts.ready?.then(onFontsLoaded).catch(() => {});
+    fonts.addEventListener?.('loadingdone', onFontsLoaded);
+    fontsCleanup = () => fonts.removeEventListener?.('loadingdone', onFontsLoaded);
+  }
 });
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   clearTimeout(resizeTimer);
+  clearTimeout(uploadHintTimer);
+  uploadQueue.length = 0;
+  termUploadAbort?.abort();
   clearLongPressTimer();
   window.removeEventListener('resize', updateMobileUi);
   mobileMediaQueryCleanup?.();
+  fontsCleanup?.();
+  clearTimeout(fontRemeasureTimer);
   unbindViewport();
   termRef.value?.removeEventListener('contextmenu', onContextMenu);
   termRef.value?.removeEventListener('paste', onTerminalPaste);
@@ -791,11 +1042,32 @@ onBeforeUnmount(() => {
   termRef.value?.removeEventListener('touchend', clearLongPressTimer);
   termRef.value?.removeEventListener('touchcancel', clearLongPressTimer);
   clearNativePasteFallback();
-  clearTimeout(scrollResumeTimer);
   clearTimeout(autoScrollTimer);
+  clearTimeout(scrollIdleTimer);
+  stopInertia();
+  disableWebgl();
   selectionDisposable?.dispose();
   term?.dispose();
 });
+
+function scheduleFontRemeasure() {
+  clearTimeout(fontRemeasureTimer);
+  fontRemeasureTimer = setTimeout(() => remeasureFont(), 50);
+}
+
+// xterm 只在字体选项变化时重测字宽并清空字形宽度缓存，这里切换一次选项强制刷新
+function remeasureFont({ forceResize = false } = {}) {
+  if (!term || !lastW || !lastH) return;
+  const family = term.options.fontFamily;
+  const { cols, rows } = term;
+  term.options.fontFamily = 'monospace';
+  term.options.fontFamily = family;
+  fitAddon?.fit();
+  if (forceResize || term.cols !== cols || term.rows !== rows) {
+    emit('resize', { cols: term.cols, rows: term.rows });
+  }
+  if (!userScrolled && !mobileCopyMode.value) scrollToBottomSoon();
+}
 
 function write(data, options = {}) { smartWrite(data, options); }
 function writeReplay(data) { smartWrite(data, { suppressInput: true }); }
@@ -804,13 +1076,18 @@ function fit() {
   if (!userScrolled && !mobileCopyMode.value) scrollToBottomSoon();
 }
 function scrollToBottom() {
-  userScrolled = false;
-  clearTimeout(scrollResumeTimer);
+  setUserScrolled(false);
   flushPending();
   term?.scrollToBottom();
 }
+function jumpToBottom() {
+  scrollToBottom();
+  scrollToBottomSoon();
+  if (!isMobileViewport()) focusTerm();
+}
 function clear() {
   pendingWrites.splice(0);
+  pendingBytes = 0;
   resetOptimisticEcho();
   term?.clear();
 }
@@ -1000,7 +1277,7 @@ function openMobileCopyMode() {
   suppressTerminalFocusUntil = Date.now() + 1200;
   blurTerminalInputs();
   copyModeOpenedNearBottom = isNearBottom();
-  userScrolled = true;
+  setUserScrolled(true);
   mobileCopyText.value = getTerminalBufferText();
   mobileCopyMode.value = true;
   nextTick(() => {
@@ -1021,14 +1298,10 @@ function closeMobileCopyMode() {
   mobileCopyMode.value = false;
   mobileCopyText.value = '';
   suppressTerminalFocusUntil = Date.now() + 800;
-  if (copyModeOpenedNearBottom) {
-    userScrolled = false;
+  if (copyModeOpenedNearBottom || isNearBottom()) {
+    setUserScrolled(false);
     flushPending();
     scrollToBottomSoon();
-  } else {
-    // 复制模式期间强制置了 userScrolled=true；退出时安排一次兜底恢复，
-    // 避免在滚动位置未回到底部时输出被永久冻结（假死）
-    scheduleScrollResume();
   }
   nextTick(() => blurTerminalInputs());
 }
@@ -1069,7 +1342,6 @@ function onTermTouchStart(e) {
   if (!isMobileViewport() || mobileCopyMode.value) return;
   const touch = e.touches?.[0];
   if (!touch) return;
-  markUserScrollIntent();
   touchStartPoint = { x: touch.clientX, y: touch.clientY };
   touchMoved = false;
   clearTimeout(longPressTimer);
@@ -1084,7 +1356,6 @@ function onTermTouchStart(e) {
 
 function onTermTouchMove(e) {
   if (!isMobileViewport()) return;
-  markUserScrollIntent();
   const touch = e.touches?.[0];
   if (!touch || !touchStartPoint) return;
   const dx = Math.abs(touch.clientX - touchStartPoint.x);
@@ -1093,9 +1364,6 @@ function onTermTouchMove(e) {
     touchMoved = true;
     clearTimeout(longPressTimer);
     longPressTimer = null;
-  }
-  if (dy > 8 || !isNearBottom()) {
-    userScrolled = true;
   }
 }
 
@@ -1155,6 +1423,8 @@ function focusPasteTrapForNativePaste() {
 }
 
 function onTerminalKeydownCapture(e) {
+  if (e.shiftKey && (e.key === 'PageUp' || e.key === 'Home')) beginScrollBack();
+  else if (e.shiftKey && (e.key === 'PageDown' || e.key === 'End')) markUserScrollIntent();
   if (!isPasteShortcut(e)) return;
   focusPasteTrapForNativePaste();
   e.stopPropagation();
@@ -1393,6 +1663,61 @@ function ctxClear()     { ctxMenu.show = false; term?.clear(); }
 }
 .img-upload-btn:hover { background: var(--panel3); background: color-mix(in srgb, var(--neon) 15%, transparent); border-color: var(--border-strong); transform: translateY(-1px); }
 .img-upload-btn.uploading { opacity: .6; cursor: default; }
+.jump-bottom-btn {
+  position: absolute;
+  right: 14px;
+  bottom: 43px;
+  z-index: 6;
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 28px; min-width: 28px; padding: 0 8px;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--text);
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px color-mix(in srgb, #000000 28%, transparent);
+  cursor: pointer;
+  --app-icon-size: 14px;
+}
+.jump-bottom-btn.has-new {
+  color: var(--neon);
+  border-color: color-mix(in srgb, var(--neon) 45%, transparent);
+}
+.jump-bottom-btn:hover { background: var(--panel2); }
+.img-upload-progress {
+  position: absolute;
+  left: 10px;
+  bottom: 43px;
+  z-index: 5;
+  width: min(300px, calc(100vw - 20px));
+  font-family: 'JetBrains Mono', monospace; font-size: 10px;
+  color: var(--text);
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--border);
+  border-color: color-mix(in srgb, var(--neon) 28%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  box-shadow: 0 8px 22px color-mix(in srgb, #000000 28%, transparent);
+  --app-icon-size: 12px;
+}
+.iup-row { display: flex; align-items: center; gap: 6px; color: var(--neon); }
+.iup-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iup-cancel {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; padding: 0; flex: none;
+  border: none; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer;
+}
+.iup-cancel:hover { color: var(--danger); background: var(--panel2); }
+.iup-track { height: 3px; margin: 5px 0 4px; border-radius: 2px; background: var(--panel2); overflow: hidden; }
+.iup-bar { height: 100%; background: var(--neon); transition: width .2s; }
+.iup-detail { display: flex; gap: 8px; justify-content: space-between; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.img-path-hint.error {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
 .img-path-hint {
   position: absolute;
   left: 10px;
@@ -1432,7 +1757,7 @@ function ctxClear()     { ctxMenu.show = false; term?.clear(); }
     height: var(--symbol-button-height, 29px);
     min-height: var(--symbol-button-height, 29px);
   }
-  .img-path-hint {
+  .img-path-hint, .img-upload-progress, .jump-bottom-btn {
     bottom: 78px;
   }
 }
@@ -1441,8 +1766,11 @@ function ctxClear()     { ctxMenu.show = false; term?.clear(); }
   .terminal-shortcuts {
     display: none;
   }
-  .img-path-hint {
+  .img-path-hint, .img-upload-progress {
     bottom: 10px;
+  }
+  .jump-bottom-btn {
+    bottom: 14px;
   }
 }
 </style>
