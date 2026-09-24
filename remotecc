@@ -16,6 +16,7 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const { spawn } = require('child_process');
+const L    = require(path.join(__dirname, 'server', 'cli-lang.js')).translator();
 
 const IS_WIN     = process.platform === 'win32';
 const RCC_DIR    = path.join(os.homedir(), '.rcc');
@@ -186,28 +187,31 @@ function printHelp() {
   console.log(`
   ${C.b}${C.c}remotecc${C.r} — Remote Claude Code CLI
 
-  ${C.b}服务管理${C.r}
-    ${C.c}remotecc start${C.r}            启动服务（守护进程，崩溃自动重启）
-    ${C.c}remotecc stop${C.r}             停止服务
-    ${C.c}remotecc restart${C.r}          重启服务（断 WS/PTY）
-    ${C.c}remotecc reload${C.r}           热重载业务层（WS/PTY 不中断）
-    ${C.c}remotecc status${C.r}           查看服务运行状态
-    ${C.c}remotecc update${C.r}           更新到最新版本（git pull + 重新构建）
+  ${C.b}${L('服务管理', 'Service')}${C.r}
+    ${C.c}remotecc start${C.r}            ${L('启动服务（守护进程，崩溃自动重启）', 'Start the service (daemon, auto-restarts on crash)')}
+    ${C.c}remotecc stop${C.r}             ${L('停止服务', 'Stop the service')}
+    ${C.c}remotecc restart${C.r}          ${L('重启服务（断 WS/PTY）', 'Restart the service (drops WS/PTY)')}
+    ${C.c}remotecc reload${C.r}           ${L('热重载业务层（WS/PTY 不中断）', 'Hot-reload the app layer (WS/PTY stay up)')}
+    ${C.c}remotecc status${C.r}           ${L('查看服务运行状态', 'Show service status')}
+    ${C.c}remotecc update${C.r}           ${L('更新到最新版本（git pull + 重新构建）', 'Update to the latest version (git pull + rebuild)')}
 
-  ${C.b}会话管理${C.r}
-    ${C.c}remotecc${C.r}                  进入 TUI 界面（等同于 rcc-tui）
-    ${C.c}remotecc attach${C.r}           进入 TUI 界面
-    ${C.c}remotecc ls${C.r}               列出所有会话
-    ${C.c}remotecc log <name|id>${C.r}     实时查看会话日志（tail -f）
+  ${C.b}${L('会话管理', 'Sessions')}${C.r}
+    ${C.c}remotecc${C.r}                  ${L('进入 TUI 界面（等同于 rcc-tui）', 'Open the TUI (same as rcc-tui)')}
+    ${C.c}remotecc attach${C.r}           ${L('进入 TUI 界面', 'Open the TUI')}
+    ${C.c}remotecc ls${C.r}               ${L('列出所有会话', 'List all sessions')}
+    ${C.c}remotecc log <name|id>${C.r}     ${L('实时查看会话日志（tail -f）', 'Follow a session log (tail -f)')}
 
-  ${C.b}交互式界面${C.r}
-    ${C.c}rcc-tui${C.r}                   本地交互式 TUI（无需登录，推荐）
+  ${C.b}${L('交互式界面', 'Interactive UI')}${C.r}
+    ${C.c}rcc-tui${C.r}                   ${L('本地交互式 TUI（无需登录，推荐）', 'Local interactive TUI (no login, recommended)')}
 
-  ${C.b}Web 界面${C.r}
-    启动服务后浏览器访问 ${C.c}http://<IP>:<PORT>${C.r}
+  ${C.b}${L('Web 界面', 'Web UI')}${C.r}
+    ${L('启动服务后浏览器访问', 'After starting the service, open')} ${C.c}http://<IP>:<PORT>${C.r}
 
-  ${C.b}断开会话${C.r}
-    在会话内按 ${C.b}Ctrl+]${C.r} 断开回菜单，不终止 Claude 进程
+  ${C.b}${L('断开会话', 'Detaching')}${C.r}
+    ${L('在会话内按', 'Press')} ${C.b}Ctrl+]${C.r} ${L('断开回菜单，不终止 Agent 进程', 'inside a session to return to the menu without stopping the agent')}
+
+  ${C.b}${L('界面语言', 'Language')}${C.r}
+    ${L('默认中文；设置 RCC_LANG=en 或安装时加 --lang en 切换为英文', 'Chinese by default; set RCC_LANG=en or install with --lang en for English')}
   `);
 }
 
@@ -316,16 +320,16 @@ switch (cmd) {
       if (!('RCC_AGENT' in env)) patch.RCC_AGENT = env.CLAUDE_BIN ? 'claude' : 'codex';
       if (!('CLAUDE_BIN' in env)) patch.CLAUDE_BIN = detectBin('claude');
       if (!('CODEX_BIN' in env)) patch.CODEX_BIN = detectBin('codex');
-      if (!('CLAUDE_PROXY' in env)) patch.CLAUDE_PROXY = prompt('Claude Code 代理 URL（示例 http://127.0.0.1:7890，可留空）', '');
-      if (!('CODEX_PROXY' in env)) patch.CODEX_PROXY = prompt('Codex 代理 URL（示例 http://127.0.0.1:7890，可留空）', '');
+      if (!('CLAUDE_PROXY' in env)) patch.CLAUDE_PROXY = prompt(L('Claude Code 代理 URL（示例 http://127.0.0.1:7890，可留空）', 'Claude Code proxy URL (e.g. http://127.0.0.1:7890, optional)'), '');
+      if (!('CODEX_PROXY' in env)) patch.CODEX_PROXY = prompt(L('Codex 代理 URL（示例 http://127.0.0.1:7890，可留空）', 'Codex proxy URL (e.g. http://127.0.0.1:7890, optional)'), '');
       if (!('AGENT_NO_PROXY' in env)) patch.AGENT_NO_PROXY = process.env.AGENT_NO_PROXY || 'localhost,127.0.0.1,::1';
       if (Object.keys(patch).length) {
         writeEnv(patch);
-        ok('.env 已补充 Agent/Codex 兼容配置');
+        ok(L('.env 已补充 Agent/Codex 兼容配置', '.env updated with Agent/Codex settings'));
       }
     }
 
-    console.log(`\n  ${C.cyan}RemoteCC 更新${C.reset}\n`);
+    console.log(`\n  ${C.cyan}${L('RemoteCC 更新', 'RemoteCC update')}${C.reset}\n`);
 
     // 1. 记录更新前的关键文件 hash（server/ + 脚本文件），判断是否需要重启
     const RESTART_PATHS = 'server/ rcc-server remotecc rcc-tui';
@@ -334,8 +338,8 @@ switch (cmd) {
 
     // 2. git pull（先还原 package-lock.json 避免 rebase 冲突）
     try { pipe('git checkout -- client/package-lock.json server/package-lock.json 2>/dev/null || true'); } catch (_) {}
-    try { run('git pull --rebase origin main'); ok('代码已更新'); }
-    catch (_) { err('git pull 失败，请检查网络或手动执行: git pull --rebase origin main'); }
+    try { run('git pull --rebase origin main'); ok(L('代码已更新', 'Code updated')); }
+    catch (_) { err(L('git pull 失败，请检查网络或手动执行: git pull --rebase origin main', 'git pull failed; check the network or run: git pull --rebase origin main')); }
 
     // 3. 判断是否有需要重启的文件变更
     let serverHashAfter = '';
@@ -344,20 +348,20 @@ switch (cmd) {
 
     // 4. 服务端依赖（仅 server/ 有变化时安装）
     if (serverChanged) {
-      process.stdout.write('  安装服务端依赖...');
+      process.stdout.write(L('  安装服务端依赖...', '  Installing server dependencies...'));
       try {
         execSync('npm install --loglevel=error', { cwd: path.join(dir, 'server'), stdio: 'pipe' });
         console.log(' ✓');
-      } catch (e) { console.log(''); err('npm install (server) 失败: ' + e.message); }
+      } catch (e) { console.log(''); err(L('npm install (server) 失败: ', 'npm install (server) failed: ') + e.message); }
     }
 
     // 5. 前端构建
-    process.stdout.write('  构建前端...');
+    process.stdout.write(L('  构建前端...', '  Building frontend...'));
     try {
       execSync('npm install --loglevel=error', { cwd: path.join(dir, 'client'), stdio: 'pipe' });
       execSync('npm run build', { cwd: path.join(dir, 'client'), stdio: 'pipe' });
       console.log(' ✓');
-    } catch (e) { console.log(''); err('前端构建失败: ' + e.message); }
+    } catch (e) { console.log(''); err(L('前端构建失败: ', 'Frontend build failed: ') + e.message); }
 
     // 5.1. 旧版本升级补齐 Codex / Agent 代理配置
     migrateEnv();
@@ -369,26 +373,26 @@ switch (cmd) {
     if (serverChanged) {
       // server/ 或脚本有变更，必须完整重启
       if (serviceRunning) {
-        warn('服务端有更新，正在重启服务...');
+        warn(L('服务端有更新，正在重启服务...', 'Server code changed, restarting the service...'));
         try {
           execSync(path.join(dir, 'rcc-server') + ' restart', { stdio: 'inherit' });
-          ok('服务已重启，刷新浏览器即可 🎉');
+          ok(L('服务已重启，刷新浏览器即可 🎉', 'Service restarted, refresh your browser 🎉'));
         } catch (_) {
-          warn('自动重启失败，请手动执行: remotecc restart');
+          warn(L('自动重启失败，请手动执行: remotecc restart', 'Automatic restart failed; run: remotecc restart'));
         }
       } else {
-        ok('更新完成。启动服务: remotecc start');
+        ok(L('更新完成。启动服务: remotecc start', 'Update complete. Start the service: remotecc start'));
       }
     } else if (serviceRunning) {
       // 仅前端变更，热重载即可
       try {
         execSync(path.join(dir, 'rcc-server') + ' reload', { stdio: 'pipe' });
-        ok('服务已热重载，刷新浏览器即可 🎉');
+        ok(L('服务已热重载，刷新浏览器即可 🎉', 'Service hot-reloaded, refresh your browser 🎉'));
       } catch (_) {
-        ok('前端已更新，请刷新浏览器（或执行 remotecc reload）');
+        ok(L('前端已更新，请刷新浏览器（或执行 remotecc reload）', 'Frontend updated; refresh your browser (or run remotecc reload)'));
       }
     } else {
-      ok('更新完成。启动服务: remotecc start');
+      ok(L('更新完成。启动服务: remotecc start', 'Update complete. Start the service: remotecc start'));
     }
     break;
   }

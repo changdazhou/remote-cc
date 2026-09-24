@@ -118,6 +118,8 @@ bash install.sh
 
 安装脚本全程交互，自动检测环境，无需手动配置。
 
+安装向导、`rcc-tui` 和命令行提示默认中文。需要英文时用 `bash install.sh --lang en`（或 `RCC_LANG=en bash install.sh`），选择会记在 `~/.rcc/lang`，之后 `rcc-tui`、`remotecc` 也默认英文；临时切换可在命令前加 `RCC_LANG=en` 或 `RCC_LANG=zh`。Web 界面的语言在设置页单独切换。
+
 RemoteCC 会自动检测 Claude Code、Codex 和 Grok，至少安装其中一个即可。新建会话时可以选择 Agent，并可在「启动参数」里临时填写要透传给 Agent CLI 的参数（如 `--model xxx`）；历史恢复支持 Claude Code 的 `~/.claude/projects/`、Codex 的 `~/.codex/sessions/` 以及 Grok 的 `~/.grok/sessions/` 会话记录。
 
 如果 Codex 或 Claude Code 需要代理，可在安装向导中配置 `CODEX_PROXY` / `CLAUDE_PROXY`。代理只注入对应 Agent CLI，不作为 RemoteCC 全局代理；提示里的默认示例是 `http://127.0.0.1:7890`。
@@ -158,6 +160,7 @@ remotecc attach <名称>  # 直接进入指定名称的会话
 ### 2026-09-24
 
 - **终端渲染**：改用 WebGL 渲染，选区与文字对齐；字体、字号变化后重新测量并同步列数，PC 端右侧不再截掉字符
+- **命令行英文**：安装向导、`rcc-tui`、`remotecc` 支持英文，默认中文，用 `--lang en` 或 `RCC_LANG=en` 切换
 - **滚动**：上划查看历史不再被新输出拉回，10 秒无操作自动回到底部；新增「回到底部」按钮，手机滑动支持惯性
 - **配色**：正确应答 Agent 的终端颜色查询，配色跟随主题；在 Agent 会话中启动服务时，新会话不再继承关闭颜色等设置
 - **上传**：显示进度、速度和剩余时间，可取消；单文件上限 10 GB

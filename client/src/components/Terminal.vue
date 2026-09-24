@@ -545,7 +545,11 @@ function enableWebgl() {
   if (webglAddon || !term) return;
   try {
     const addon = new WebglAddon();
-    addon.onContextLoss(() => disableWebgl());
+    // 回退到 DOM 渲染后字宽不再按设备像素取整，要重新测量列数
+    addon.onContextLoss(() => {
+      disableWebgl();
+      remeasureFont();
+    });
     term.loadAddon(addon);
     webglAddon = addon;
   } catch (_) {
@@ -1078,7 +1082,7 @@ function fitAndSync({ force = false } = {}) {
 function write(data, options = {}) { smartWrite(data, options); }
 function writeReplay(data) { smartWrite(data, { suppressInput: true }); }
 function fit() {
-  fitAddon?.fit();
+  fitAndSync();
   if (!userScrolled && !mobileCopyMode.value) scrollToBottomSoon();
 }
 function scrollToBottom() {

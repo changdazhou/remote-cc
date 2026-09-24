@@ -24,6 +24,8 @@ const APP_DIR     = (() => {
   try { return path.dirname(fs.realpathSync(process.argv[1] || __filename)); } catch (_) { return __dirname; }
 })();
 const SERVER_DIR  = path.join(APP_DIR, 'server');
+const L           = require(path.join(SERVER_DIR, 'cli-lang.js')).translator();
+const DATE_LOCALE = L('zh-CN', 'en-US');
 const RCC_DIR     = path.join(HOME, '.rcc');
 const META_FILE   = path.join(RCC_DIR, 'sessions.json');
 const LOCK_FILE   = path.join(RCC_DIR, 'server.lock');
@@ -498,8 +500,8 @@ function fmtDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   const diff = Date.now() - d.getTime();
-  if (diff < 86400000) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  if (diff < 86400000) return d.toLocaleTimeString(DATE_LOCALE, { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString(DATE_LOCALE, { month: '2-digit', day: '2-digit' });
 }
 
 // ── WS 创建会话 ───────────────────────────────────────────────────────────────
@@ -537,7 +539,7 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId, agent, e
     const key = crypto.randomBytes(16).toString('base64');
     const sock = net.createConnection(port, host);
     let upgraded = false, binBuf = Buffer.alloc(0), sessionId = null;
-    const timer = setTimeout(() => { sock.destroy(); reject(new Error('超时')); }, 15000);
+    const timer = setTimeout(() => { sock.destroy(); reject(new Error(L('超时', 'timed out'))); }, 15000);
 
     sock.on('connect', () => {
       sock.write(
@@ -551,7 +553,7 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId, agent, e
       if (!upgraded) {
         const s = chunk.toString('binary'), idx = s.indexOf('\r\n\r\n');
         if (idx === -1) return;
-        if (!s.includes('101')) { sock.destroy(); reject(new Error('WS 握手失败')); return; }
+        if (!s.includes('101')) { sock.destroy(); reject(new Error(L('WS 握手失败', 'WebSocket handshake failed'))); return; }
         upgraded = true;
         const rest = chunk.slice(Buffer.from(s.slice(0, idx + 4), 'binary').length);
         if (rest.length) binBuf = Buffer.concat([binBuf, rest]);
@@ -582,7 +584,7 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId, agent, e
       });
     });
     sock.on('error', e => { clearTimeout(timer); reject(e); });
-    sock.on('close', () => { if (!sessionId) { clearTimeout(timer); reject(new Error('连接断开')); } });
+    sock.on('close', () => { if (!sessionId) { clearTimeout(timer); reject(new Error(L('连接断开', 'connection closed'))); } });
   });
 }
 
@@ -592,8 +594,8 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId, agent, e
 const ESCAPE_KEY = '\x1d';
 
 function doAttach(sp, sname, onDetach, sessionId) {
-  wr(A.show + '\n' + A.cyan + '  已接入 ' + A.b + sname + A.R +
-     A.gray + '  （Ctrl+] 断开回菜单，不终止会话）\n\n' + A.R);
+  wr(A.show + '\n' + A.cyan + L('  已接入 ', '  Attached to ') + A.b + sname + A.R +
+     A.gray + L('  （Ctrl+] 断开回菜单，不终止会话）', '  (Ctrl+] detaches to the menu; the session keeps running)') + '\n\n' + A.R);
 
   const sock = net.createConnection(sp);
 
@@ -647,8 +649,8 @@ function doAttach(sp, sname, onDetach, sessionId) {
     process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
 
     const msg = fromEscape
-      ? A.cyan + '[已断开]' + A.R
-      : A.green + '[会话已结束]' + A.R;
+      ? A.cyan + L('[已断开]', '[detached]') + A.R
+      : A.green + L('[会话已结束]', '[session ended]') + A.R;
     wr(msg + '\n');
 
     // CC 退出时等 6s（服务端 5s 后清理 session），确保 meta 文件已更新
@@ -673,7 +675,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
       process.stdout.removeListener('resize', sendResize);
       if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
       process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
-      wr(A.red + '[服务已停止，rcc-tui 退出]' + A.R + '\n');
+      wr(A.red + L('[服务已停止，rcc-tui 退出]', '[service stopped, rcc-tui exiting]') + A.R + '\n');
       process.exit(0);
     }
   }, 3000);
@@ -686,7 +688,7 @@ function returnToMainAfterDetach() {
   // doAttach removes readline's internal data listeners; re-register before menu().
   readline.emitKeypressEvents(process.stdin);
   pageMain().catch(err => {
-    wr(A.show + '\n' + A.red + '  错误: ' + err.message + A.R + '\n');
+    wr(A.show + '\n' + A.red + L('  错误: ', '  Error: ') + err.message + A.R + '\n');
     process.exit(1);
   });
 }
@@ -740,7 +742,7 @@ function menu(title, items, opts = {}) {
 
       wr('\n' + hr('·', A.d) + '\n');
       if (footer) wr(A.gray + '  ' + footer + A.R + '\n');
-      wr(A.gray + '  ↑↓ 选择   Enter 确认   q/Esc 返回   Ctrl+C 退出' + A.R + '\n');
+      wr(A.gray + L('  ↑↓ 选择   Enter 确认   q/Esc 返回   Ctrl+C 退出', '  ↑↓ select   Enter confirm   q/Esc back   Ctrl+C quit') + A.R + '\n');
     };
 
     const next = (dir) => {
@@ -827,9 +829,9 @@ async function pageMain() {
   const deadSessions  = metas.filter(s => !s.alive);
 
   const hdr = alive
-    ? A.green + '● 服务运行中' + A.R + A.gray + `  :${info.port}` + (info.pid ? `  pid ${info.pid}` : '  local') + A.R
-      + (localToken() ? '' : A.yellow + '  ⚠ token 未就绪，稍等...' + A.R)
-    : A.red + '✗ 服务未运行' + A.R + A.gray + '  请先执行 remotecc start' + A.R;
+    ? A.green + L('● 服务运行中', '● Service running') + A.R + A.gray + `  :${info.port}` + (info.pid ? `  pid ${info.pid}` : '  local') + A.R
+      + (localToken() ? '' : A.yellow + L('  ⚠ token 未就绪，稍等...', '  ⚠ token not ready yet, please wait...') + A.R)
+    : A.red + L('✗ 服务未运行', '✗ Service not running') + A.R + A.gray + L('  请先执行 remotecc start', '  run remotecc start first') + A.R;
 
   const items = [];
 
@@ -840,7 +842,7 @@ async function pageMain() {
       const ok = sockAlive(s.sessionId);
       items.push({
         label: A.green + '● ' + A.b + s.name + A.R + A.gray + '  ' + agentName(s.agent) + '  ' + cwd(s.workingDir) + A.R
-             + (ok ? '' : A.red + '  [无socket]' + A.R),
+             + (ok ? '' : A.red + L('  [无socket]', '  [no socket]') + A.R),
         hint: a + ' ago',
         _type: 'session', _data: s,
       });
@@ -861,17 +863,17 @@ async function pageMain() {
 
   items.push({ _sep: true });
   if (alive) {
-    items.push({ label: A.cyan + '＋  新建 Claude Code 对话' + A.R, _type: 'new', _agent: 'claude' });
-    items.push({ label: A.cyan + '＋  新建 Codex 对话' + A.R, _type: 'new', _agent: 'codex' });
-    items.push({ label: A.cyan + '＋  新建 Grok 对话' + A.R, _type: 'new', _agent: 'grok' });
+    items.push({ label: A.cyan + L('＋  新建 Claude Code 对话', '＋  New Claude Code conversation') + A.R, _type: 'new', _agent: 'claude' });
+    items.push({ label: A.cyan + L('＋  新建 Codex 对话', '＋  New Codex conversation') + A.R, _type: 'new', _agent: 'codex' });
+    items.push({ label: A.cyan + L('＋  新建 Grok 对话', '＋  New Grok conversation') + A.R, _type: 'new', _agent: 'grok' });
   }
-  items.push({ label: A.blue + '⏎  恢复 Claude Code 历史' + A.R, hint: '从 ~/.claude 加载历史', _type: 'history', _agent: 'claude' });
-  items.push({ label: A.blue + '⏎  恢复 Codex 历史' + A.R, hint: `从 ${AGENTS.codex.history} 加载历史`, _type: 'history', _agent: 'codex' });
-  items.push({ label: A.blue + '⏎  恢复 Grok 历史' + A.R, hint: `从 ${AGENTS.grok.history} 加载历史`, _type: 'history', _agent: 'grok' });
-  items.push({ label: A.gray + '↻  刷新' + A.R, _type: 'refresh' });
-  items.push({ label: A.gray + '✕  退出' + A.R, _type: 'quit' });
+  items.push({ label: A.blue + L('⏎  恢复 Claude Code 历史', '⏎  Resume Claude Code history') + A.R, hint: L('从 ~/.claude 加载历史', 'load history from ~/.claude'), _type: 'history', _agent: 'claude' });
+  items.push({ label: A.blue + L('⏎  恢复 Codex 历史', '⏎  Resume Codex history') + A.R, hint: L(`从 ${AGENTS.codex.history} 加载历史`, `load history from ${AGENTS.codex.history}`), _type: 'history', _agent: 'codex' });
+  items.push({ label: A.blue + L('⏎  恢复 Grok 历史', '⏎  Resume Grok history') + A.R, hint: L(`从 ${AGENTS.grok.history} 加载历史`, `load history from ${AGENTS.grok.history}`), _type: 'history', _agent: 'grok' });
+  items.push({ label: A.gray + L('↻  刷新', '↻  Refresh') + A.R, _type: 'refresh' });
+  items.push({ label: A.gray + L('✕  退出', '✕  Quit') + A.R, _type: 'quit' });
 
-  const idx = await menu('对话列表', items, { hdr, banner: true });
+  const idx = await menu(L('对话列表', 'Conversations'), items, { hdr, banner: true });
   if (idx === null) return pageMain();
 
   const item = items[idx];
@@ -895,15 +897,15 @@ async function pageSession(s) {
 
   const items = [
     ok
-      ? { label: A.green + '▶  接入会话' + A.R, hint: 'Ctrl+] 断开，不终止会话', _type: 'attach' }
-      : { label: A.gray  + '▶  接入会话（无 socket）' + A.R, _type: 'nosock', _disabled: !ok },
-    { label: A.blue  + '≡  查看日志' + A.R,                hint: 'tail -f 实时输出', _type: 'log' },
-    { label: A.red   + '⏹  关闭会话' + A.R,               hint: '终止 PTY 进程',    _type: 'kill' },
-    { label: A.gray  + '←  返回列表' + A.R,                                          _type: 'back' },
+      ? { label: A.green + L('▶  接入会话', '▶  Attach') + A.R, hint: L('Ctrl+] 断开，不终止会话', 'Ctrl+] detaches without ending the session'), _type: 'attach' }
+      : { label: A.gray  + L('▶  接入会话（无 socket）', '▶  Attach (no socket)') + A.R, _type: 'nosock', _disabled: !ok },
+    { label: A.blue  + L('≡  查看日志', '≡  View log') + A.R,                hint: L('tail -f 实时输出', 'live output via tail -f'), _type: 'log' },
+    { label: A.red   + L('⏹  关闭会话', '⏹  Close session') + A.R,               hint: L('终止 PTY 进程', 'terminate the PTY process'),    _type: 'kill' },
+    { label: A.gray  + L('←  返回列表', '←  Back to list') + A.R,                                          _type: 'back' },
   ];
 
   const idx = await menu(
-    '会话: ' + A.b + s.name + A.R,
+    L('会话: ', 'Session: ') + A.b + s.name + A.R,
     items,
     { hdr: A.gray + agentName(s.agent) + '  ' + cwd(s.workingDir) + '  ' + s.sessionId.slice(0,8) + A.R }
   );
@@ -915,7 +917,7 @@ async function pageSession(s) {
       doAttach(sp, s.name, pageMain, s.sessionId);
       break;
     case 'nosock':
-      await notice('Socket 不可用，请确认服务运行中', A.red, 1800);
+      await notice(L('Socket 不可用，请确认服务运行中', 'Socket unavailable; make sure the service is running'), A.red, 1800);
       return pageMain();
     case 'log':
       await doTail(s);
@@ -929,11 +931,11 @@ async function pageSession(s) {
 // ── 已结束会话 ────────────────────────────────────────────────────────────────
 async function pageDeadSession(s) {
   const items = [
-    { label: A.blue + '≡  查看历史日志' + A.R,  _type: 'log' },
-    { label: A.red  + '✕  删除会话记录' + A.R,   _type: 'delete' },
-    { label: A.gray + '←  返回列表' + A.R,        _type: 'back' },
+    { label: A.blue + L('≡  查看历史日志', '≡  View log history') + A.R,  _type: 'log' },
+    { label: A.red  + L('✕  删除会话记录', '✕  Delete session record') + A.R,   _type: 'delete' },
+    { label: A.gray + L('←  返回列表', '←  Back to list') + A.R,        _type: 'back' },
   ];
-  const idx = await menu('已结束: ' + A.d + s.name + A.R, items);
+  const idx = await menu(L('已结束: ', 'Ended: ') + A.d + s.name + A.R, items);
   if (idx === null || items[idx]?._type === 'back') return pageMain();
   if (items[idx]._type === 'log') await doTail(s, false);
   if (items[idx]._type === 'delete') await doDeleteSession(s, serverInfo());
@@ -971,19 +973,19 @@ function sendControlMsg(info, msg) {
 }
 
 async function doKillSession(s, info) {
-  wr('\n' + A.gray + '  正在关闭会话...' + A.R);
+  wr('\n' + A.gray + L('  正在关闭会话...', '  Closing session...') + A.R);
   const ok = await sendControlMsg(info, { type: 'kill', sessionId: s.sessionId });
   wr(A.up(1) + A.erase);
-  if (ok) await notice('会话已关闭', A.green, 800);
-  else    await notice('关闭失败，请确认服务运行中', A.red, 1500);
+  if (ok) await notice(L('会话已关闭', 'Session closed'), A.green, 800);
+  else    await notice(L('关闭失败，请确认服务运行中', 'Close failed; make sure the service is running'), A.red, 1500);
 }
 
 async function doDeleteSession(s, info) {
-  wr('\n' + A.gray + '  正在删除会话记录...' + A.R);
+  wr('\n' + A.gray + L('  正在删除会话记录...', '  Deleting session record...') + A.R);
   const ok = await sendControlMsg(info, { type: 'delete', sessionId: s.sessionId });
   wr(A.up(1) + A.erase);
-  if (ok) await notice('已删除', A.green, 600);
-  else    await notice('删除失败', A.red, 1500);
+  if (ok) await notice(L('已删除', 'Deleted'), A.green, 600);
+  else    await notice(L('删除失败', 'Delete failed'), A.red, 1500);
 }
 
 // ── 新建对话 ──────────────────────────────────────────────────────────────────
@@ -1000,21 +1002,21 @@ async function pageHistory(info, agent = 'claude') {
   const projects = loadProjects(agent);
 
   if (!projects.length) {
-    await notice(`未找到 ${agentName(agent)} 历史对话（${AGENTS[normalizeAgent(agent)].history} 为空）`, A.yellow, 2000);
+    await notice(L(`未找到 ${agentName(agent)} 历史对话（${AGENTS[normalizeAgent(agent)].history} 为空）`, `No ${agentName(agent)} history found (${AGENTS[normalizeAgent(agent)].history} is empty)`), A.yellow, 2000);
     return pageMain();
   }
 
   // 第一级：选项目
   const items = projects.map(p => ({
-    label: A.cyan + cwd(p.displayPath) + A.R + A.gray + `  ${p.sessions.length} 个对话` + A.R,
+    label: A.cyan + cwd(p.displayPath) + A.R + A.gray + L(`  ${p.sessions.length} 个对话`, `  ${p.sessions.length} conversation(s)`) + A.R,
     hint:  fmtDate(p.sessions[0]?.lastModified),
     _type: 'project', _data: p,
   }));
   items.push({ _sep: true });
-  items.push({ label: A.gray + '←  返回' + A.R, _type: 'back' });
+  items.push({ label: A.gray + L('←  返回', '←  Back') + A.R, _type: 'back' });
 
-  const idx = await menu('恢复历史对话  选择项目', items, {
-    hdr: A.gray + '来源: ' + AGENTS[normalizeAgent(agent)].history + A.R
+  const idx = await menu(L('恢复历史对话  选择项目', 'Resume history  choose a project'), items, {
+    hdr: A.gray + L('来源: ', 'Source: ') + AGENTS[normalizeAgent(agent)].history + A.R
   });
 
   if (idx === null || items[idx]?._type === 'back') return pageMain();
@@ -1025,16 +1027,16 @@ async function pageHistorySessions(info, project, agent = 'claude') {
   const sessions = project.sessions;
 
   const items = sessions.map(s => ({
-    label: A.white + (s.lastMessage || '(无预览)') + A.R,
-    sub:   `${s.messageCount} 条消息  ${fmtDate(s.lastModified)}  ${s.sessionId.slice(0,8)}`,
+    label: A.white + (s.lastMessage || L('(无预览)', '(no preview)')) + A.R,
+    sub:   L(`${s.messageCount} 条消息`, `${s.messageCount} messages`) + `  ${fmtDate(s.lastModified)}  ${s.sessionId.slice(0,8)}`,
     hint:  s.cwd ? cwd(s.cwd) : '',
     _type: 'session', _data: s,
   }));
   items.push({ _sep: true });
-  items.push({ label: A.gray + '←  返回项目列表' + A.R, _type: 'back' });
+  items.push({ label: A.gray + L('←  返回项目列表', '←  Back to projects') + A.R, _type: 'back' });
 
   const idx = await menu(
-    '选择历史对话',
+    L('选择历史对话', 'Choose a conversation'),
     items,
     { hdr: A.cyan + cwd(project.displayPath) + A.R }
   );
@@ -1051,17 +1053,17 @@ async function pageHistorySessions(info, project, agent = 'claude') {
 
 function askExtraArgs() {
   wr(A.clear);
-  return input('启动参数（可选，原样透传给 Agent，如 --model xxx；直接回车跳过）');
+  return input(L('启动参数（可选，原样透传给 Agent，如 --model xxx；直接回车跳过）', 'Launch args (optional, passed to the agent as-is, e.g. --model xxx; press Enter to skip)'));
 }
 
 // ── 创建会话通用逻辑 ──────────────────────────────────────────────────────────
 async function doCreate(info, workingDir, name, resumeSessionId, agent = 'claude', extraArgs = '') {
   if (!info || !serverAlive(info)) {
-    await notice('服务未运行，请先执行 rcc-server start', A.red, 2500);
+    await notice(L('服务未运行，请先执行 rcc-server start', 'Service not running; run rcc-server start first'), A.red, 2500);
     return pageMain();
   }
 
-  wr('\n' + A.gray + '  正在创建会话...' + A.R);
+  wr('\n' + A.gray + L('  正在创建会话...', '  Creating session...') + A.R);
 
   // token 由服务启动时生成，若不存在说明服务未运行
   let tok = localToken();
@@ -1071,17 +1073,17 @@ async function doCreate(info, workingDir, name, resumeSessionId, agent = 'claude
   }
   if (!tok) {
     wr(A.up(1) + A.erase + '\n');
-    wr(A.red + '  ✗ 服务未运行，无法创建会话\n' + A.R);
-    wr(A.gray + '  请先执行：remotecc start\n\n' + A.R);
+    wr(A.red + L('  ✗ 服务未运行，无法创建会话\n', '  ✗ Service not running, cannot create a session\n') + A.R);
+    wr(A.gray + L('  请先执行：remotecc start\n\n', '  Run first: remotecc start\n\n') + A.R);
 
     // 提供一键启动
     const lock = serverInfo();
     if (!lock) {
       const items = [
-        { label: A.cyan + '▶  立即启动服务' + A.R, _type: 'start' },
-        { label: A.gray + '←  返回菜单' + A.R,   _type: 'back' },
+        { label: A.cyan + L('▶  立即启动服务', '▶  Start the service now') + A.R, _type: 'start' },
+        { label: A.gray + L('←  返回菜单', '←  Back to menu') + A.R,   _type: 'back' },
       ];
-      const idx = await menu('服务未运行', items);
+      const idx = await menu(L('服务未运行', 'Service not running'), items);
       if (idx !== null && items[idx]?._type === 'start') {
         const { execFileSync } = require('child_process');
         // 找 remotecc：同目录 → PATH
@@ -1092,10 +1094,10 @@ async function doCreate(info, workingDir, name, resumeSessionId, agent = 'claude
         })();
         try { execFileSync(remoteccBin, ['start'], { stdio: 'ignore' }); } catch (_) {}
         // 等服务和 token 就绪
-        wr(A.show + A.gray + '\n  正在启动服务...' + A.R);
+        wr(A.show + A.gray + L('\n  正在启动服务...', '\n  Starting service...') + A.R);
         for (let i = 0; i < 20; i++) { await sl(500); tok = localToken(); if (tok) break; }
-        if (tok) { wr(A.up(1) + A.erase + A.green + '  ✓ 服务已启动\n' + A.R); await sl(400); }
-        else { await notice('启动超时，请手动执行 remotecc start', A.red, 2500); return pageMain(); }
+        if (tok) { wr(A.up(1) + A.erase + A.green + L('  ✓ 服务已启动\n', '  ✓ Service started\n') + A.R); await sl(400); }
+        else { await notice(L('启动超时，请手动执行 remotecc start', 'Start timed out; run remotecc start manually'), A.red, 2500); return pageMain(); }
       } else {
         return pageMain();
       }
@@ -1106,16 +1108,16 @@ async function doCreate(info, workingDir, name, resumeSessionId, agent = 'claude
 
   try {
     const sid = await wsCreate('localhost', info.port, tok, workingDir, name, resumeSessionId, agent, extraArgs);
-    wr(A.up(1) + A.erase + A.green + '  ✓ 会话已创建\n' + A.R);
+    wr(A.up(1) + A.erase + A.green + L('  ✓ 会话已创建\n', '  ✓ Session created\n') + A.R);
     await sl(400);
 
     const sp = sockPath(sid);
     for (let i = 0; i < 50; i++) { if (IS_WIN || fs.existsSync(sp)) break; await sl(100); }
-    if (!IS_WIN && !fs.existsSync(sp)) throw new Error('Socket 未建立');
+    if (!IS_WIN && !fs.existsSync(sp)) throw new Error(L('Socket 未建立', 'socket not created'));
 
     doAttach(sp, name, returnToMainAfterDetach);
   } catch (e) {
-    wr(A.up(1) + A.erase + A.red + '  ✗ 创建失败: ' + e.message + '\n' + A.R);
+    wr(A.up(1) + A.erase + A.red + L('  ✗ 创建失败: ', '  ✗ Create failed: ') + e.message + '\n' + A.R);
     await sl(2500);
     return pageMain();
   }
@@ -1124,12 +1126,12 @@ async function doCreate(info, workingDir, name, resumeSessionId, agent = 'claude
 // ── 日志 ──────────────────────────────────────────────────────────────────────
 async function doTail(s, follow = true) {
   if (!s.logPath || !fs.existsSync(s.logPath)) {
-    await notice('日志文件不存在: ' + (s.logPath || ''), A.red, 1800);
+    await notice(L('日志文件不存在: ', 'Log file not found: ') + (s.logPath || ''), A.red, 1800);
     return;
   }
   wr(A.clear + A.show);
   wr(A.cyan + '\n  ' + (follow ? 'Tailing' : 'Log') + ': ' + A.b + s.name + A.R
-    + A.gray + '\n  ' + s.logPath + '\n  Ctrl+C 返回菜单\n\n' + A.R);
+    + A.gray + '\n  ' + s.logPath + L('\n  Ctrl+C 返回菜单\n\n', '\n  Ctrl+C returns to the menu\n\n') + A.R);
 
   return new Promise(resolve => {
     const args = follow ? ['-f', '-n', '200', s.logPath] : ['-n', '+1', s.logPath];
@@ -1142,7 +1144,7 @@ async function doTail(s, follow = true) {
 
 // ── 入口 ──────────────────────────────────────────────────────────────────────
 if (!process.stdin.isTTY) {
-  console.error('rcc-tui 需要在交互式终端中运行');
+  console.error(L('rcc-tui 需要在交互式终端中运行', 'rcc-tui must run in an interactive terminal'));
   process.exit(1);
 }
 
@@ -1172,7 +1174,7 @@ async function startTui() {
     // 找不到或不可用，提示后进主页
     wr(A.clear);
     await notice(
-      s ? `会话 "${s.name}" 不可接入（无 socket）` : `找不到会话: ${attachArg}`,
+      s ? L(`会话 "${s.name}" 不可接入（无 socket）`, `Session "${s.name}" cannot be attached (no socket)`) : L(`找不到会话: ${attachArg}`, `Session not found: ${attachArg}`),
       A.yellow, 1800
     );
   }
@@ -1180,7 +1182,7 @@ async function startTui() {
 }
 
 startTui().catch(err => {
-  wr(A.show + '\n' + A.red + '  错误: ' + err.message + A.R + '\n');
+  wr(A.show + '\n' + A.red + L('  错误: ', '  Error: ') + err.message + A.R + '\n');
   console.error(err.stack);
   process.exit(1);
 });

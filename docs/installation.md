@@ -16,6 +16,18 @@ bash install.sh
 
 安装脚本会自动：检测环境、安装依赖、构建前端、注册命令行工具，并可选立即启动服务。
 
+**界面语言**：安装向导、`rcc-tui` 和 `remotecc` 默认中文。
+
+```bash
+bash install.sh --lang en          # 或 -L en
+RCC_LANG=en bash install.sh        # 用环境变量，效果相同
+```
+
+- 优先级：`--lang` 参数 > `RCC_LANG` 环境变量 > `~/.rcc/lang` > 中文
+- 显式指定语言时会写入 `~/.rcc/lang`，之后 `rcc-tui`、`remotecc`、`rcc-server` 都沿用；改回中文用 `--lang zh` 重新安装，或直接编辑该文件
+- 只想临时切换一次：`RCC_LANG=en rcc-tui`
+- Web 界面的语言在设置页单独切换，不受这里影响
+
 ---
 
 ### 手动安装
@@ -148,6 +160,7 @@ remotecc restart
 ├── sockets/       # Unix domain socket
 ├── sessions.json  # 会话元数据（每次启动清空）
 ├── web-settings.json # Web 设置（默认目录、主题、终端偏好等）
+├── lang           # 命令行界面语言（zh / en，安装时 --lang 写入）
 ├── server.lock    # 单实例锁
 └── local.token    # 本地认证 token（权限 600）
 ```
@@ -165,6 +178,18 @@ bash install.sh
 ```
 
 The script automatically detects the environment, installs dependencies, builds the frontend, registers CLI tools, and optionally starts the service.
+
+**Language**: the installer, `rcc-tui` and `remotecc` default to Chinese.
+
+```bash
+bash install.sh --lang en          # or -L en
+RCC_LANG=en bash install.sh        # same effect via environment variable
+```
+
+- Precedence: `--lang` flag > `RCC_LANG` environment variable > `~/.rcc/lang` > Chinese
+- An explicit choice is saved to `~/.rcc/lang`, and `rcc-tui`, `remotecc` and `rcc-server` use it afterwards; switch back with `--lang zh` or edit that file
+- To switch just once: `RCC_LANG=en rcc-tui`
+- The Web UI language is set separately on its settings page
 
 ---
 
@@ -298,6 +323,7 @@ remotecc restart
 ├── sockets/       # Unix domain sockets
 ├── sessions.json  # Session metadata (cleared on each restart)
 ├── web-settings.json # Web settings (default dirs, theme, terminal preferences)
+├── lang           # CLI language (zh / en, saved by install --lang)
 ├── server.lock    # Single-instance lock
 └── local.token    # Local auth token (chmod 600)
 ```

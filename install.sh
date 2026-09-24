@@ -9,35 +9,61 @@ R='\033[0m' B='\033[1m' D='\033[2m'
 CYAN='\033[36m' GREEN='\033[32m' YELLOW='\033[33m' RED='\033[31m' GRAY='\033[90m'
 
 # ── 参数解析（banner 之前，set -u 之后需先初始化） ──────────────────────────
-# 用法: bash install.sh [-u user] [-p pass] [-P port] [-s] [-y] [-h]
-_USER="" _PASS="" _PORT="" _SANDBOX=0 _YES=0 NON_INTERACTIVE=0
+# 用法: bash install.sh [-u user] [-p pass] [-P port] [-L zh|en] [-s] [-y] [-h]
+_USER="" _PASS="" _PORT="" _LANG="" _SANDBOX=0 _YES=0 _HELP=0 NON_INTERACTIVE=0
 
-while getopts "u:p:P:syh" opt 2>/dev/null; do
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --lang)   ARGS+=(-L "${2:-}"); shift 2 || shift ;;
+    --lang=*) ARGS+=(-L "${1#--lang=}"); shift ;;
+    *)        ARGS+=("$1"); shift ;;
+  esac
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+
+while getopts "u:p:P:L:syh" opt 2>/dev/null; do
   case $opt in
     u) _USER="$OPTARG" ;;
     p) _PASS="$OPTARG" ;;
     P) _PORT="$OPTARG" ;;
+    L) _LANG="$OPTARG" ;;
     s) _SANDBOX=1 ;;
     y) _YES=1 ;;
-    h)
-      echo ""
-      echo "  用法: bash install.sh [选项]"
-      echo ""
-      echo "  选项:"
-      echo "    -u <user>   管理员用户名（默认: admin）"
-      echo "    -p <pass>   管理员密码（必填，传参时跳过交互）"
-      echo "    -P <port>   监听端口（默认: 8310）"
-      echo "    -s          启用 IS_SANDBOX 危险模式"
-      echo "    -y          自动确认所有提示（CI/脚本模式）"
-      echo "    -h          显示此帮助"
-      echo ""
-      echo "  示例（非交互一键安装）:"
-      echo "    bash install.sh -u admin -p mypassword -P 8310 -s -y"
-      echo ""
-      exit 0 ;;
+    h) _HELP=1 ;;
     *) ;;
   esac
 done
+
+# ── 界面语言：-L/--lang > RCC_LANG > ~/.rcc/lang > 中文 ──────────────────────
+rcc_norm_lang() { case "$1" in [Ee][Nn]*) echo en ;; [Zz][Hh]*) echo zh ;; esac; }
+LANG_FILE="$HOME/.rcc/lang"
+UI_LANG="$(rcc_norm_lang "$_LANG")"
+[[ -n "$UI_LANG" ]] || UI_LANG="$(rcc_norm_lang "${RCC_LANG:-}")"
+LANG_EXPLICIT=0; [[ -n "$UI_LANG" ]] && LANG_EXPLICIT=1
+[[ -n "$UI_LANG" || ! -f "$LANG_FILE" ]] || UI_LANG="$(rcc_norm_lang "$(head -n 1 "$LANG_FILE")")"
+UI_LANG="${UI_LANG:-zh}"
+L() { if [[ "$UI_LANG" == en ]]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
+if [[ "$_HELP" == "1" ]]; then
+  echo ""
+  echo "  $(L '用法: bash install.sh [选项]' 'Usage: bash install.sh [options]')"
+  echo ""
+  echo "  $(L '选项:' 'Options:')"
+  echo "    -u <user>       $(L '管理员用户名（默认: admin）' 'admin username (default: admin)')"
+  echo "    -p <pass>       $(L '管理员密码（必填，传参时跳过交互）' 'admin password (required; skips the prompts)')"
+  echo "    -P <port>       $(L '监听端口（默认: 8310）' 'listen port (default: 8310)')"
+  echo "    -L, --lang <zh|en>  $(L '界面语言（默认: zh，也可用 RCC_LANG 环境变量）' 'UI language (default: zh; RCC_LANG also works)')"
+  echo "    -s              $(L '启用 IS_SANDBOX 危险模式' 'enable IS_SANDBOX dangerous mode')"
+  echo "    -y              $(L '自动确认所有提示（CI/脚本模式）' 'auto-confirm all prompts (CI/script mode)')"
+  echo "    -h              $(L '显示此帮助' 'show this help')"
+  echo ""
+  echo "  $(L '示例（非交互一键安装）:' 'Example (non-interactive install):')"
+  echo "    bash install.sh -u admin -p mypassword -P 8310 -s -y"
+  echo "    bash install.sh --lang en"
+  echo ""
+  exit 0
+fi
 
 # 传入密码则进入非交互模式
 [[ -n "$_PASS" || "$_YES" == "1" ]] && NON_INTERACTIVE=1
@@ -55,7 +81,7 @@ print_banner() {
   echo "  ██║  ██║╚██████╗╚██████╗ "
   echo "  ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ "
   echo -e "${R}"
-  echo -e "  ${B}RemoteCC${R}  ${GRAY}— 多端协同终端工具${R}"
+  echo -e "  ${B}RemoteCC${R}  ${GRAY}— $(L '多端协同终端工具' 'multi-device terminal for coding agents')${R}"
   echo -e "  ${D}${HR}${R}"
   echo ""
 }
@@ -88,9 +114,14 @@ proxy_input() {
   echo "${val:-$current}"
 }
 
+# 显式选择语言时记住，rcc-tui / remotecc 之后沿用
+if [[ "$LANG_EXPLICIT" == "1" ]]; then
+  mkdir -p "$HOME/.rcc" && echo "$UI_LANG" > "$LANG_FILE"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 [[ "$NON_INTERACTIVE" == "0" ]] && print_banner
-echo -e "  欢迎使用 ${B}RemoteCC${R} 一键部署向导\n"
+echo -e "  $(L "欢迎使用 ${B}RemoteCC${R} 一键部署向导" "Welcome to the ${B}RemoteCC${R} setup wizard")\n"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -102,28 +133,28 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
 fi
 
 # ── Step 1: 检查环境 ──────────────────────────────────────────────────────────
-step "检查运行环境"
+step "$(L '检查运行环境' 'Checking environment')"
 
 # Node.js
-if ! command -v node &>/dev/null; then err "未找到 Node.js，请先安装 Node.js >= v18"; fi
+if ! command -v node &>/dev/null; then err "$(L '未找到 Node.js，请先安装 Node.js >= v18' 'Node.js not found; install Node.js >= v18 first')"; fi
 NODE_VER=$(node --version)
 NODE_MAJOR=$(echo "$NODE_VER" | sed 's/v\([0-9]*\).*/\1/')
-[[ "$NODE_MAJOR" -ge 18 ]] || err "Node.js 版本过低 ($NODE_VER)，需要 >= v18"
+[[ "$NODE_MAJOR" -ge 18 ]] || err "$(L "Node.js 版本过低 ($NODE_VER)，需要 >= v18" "Node.js $NODE_VER is too old, >= v18 required")"
 ok "Node.js $NODE_VER"
 
 # npm
-command -v npm &>/dev/null || err "未找到 npm"
+command -v npm &>/dev/null || err "$(L '未找到 npm' 'npm not found')"
 ok "npm $(npm --version)"
 
 # g++（node-pty-prebuilt-multiarch 使用预编译二进制，通常不需要 g++）
 if command -v g++ &>/dev/null; then
   ok "g++ $(g++ --version | head -1 | grep -oP '\d+\.\d+\.\d+' | head -1)"
 else
-  info "未检测到 g++（使用预编译 node-pty，无需编译）"
+  info "$(L '未检测到 g++（使用预编译 node-pty，无需编译）' 'g++ not found (prebuilt node-pty is used, no compiling needed)')"
 fi
 
 # ── Step 2: 自动检测 Agent CLI ────────────────────────────────────────────────
-step "检测 Agent CLI"
+step "$(L '检测 Agent CLI' 'Detecting agent CLIs')"
 
 CLAUDE_BIN=""
 CODEX_BIN=""
@@ -168,83 +199,83 @@ for c in "${CODEX_CANDIDATES[@]}"; do
 done
 
 if [[ -z "$CLAUDE_BIN" && -z "$CODEX_BIN" ]]; then
-  err "未找到 Claude Code 或 Codex。请先安装其中一个：npm install -g @anthropic-ai/claude-code 或 npm install -g @openai/codex"
+  err "$(L '未找到 Claude Code 或 Codex。请先安装其中一个：npm install -g @anthropic-ai/claude-code 或 npm install -g @openai/codex' 'Neither Claude Code nor Codex was found. Install one first: npm install -g @anthropic-ai/claude-code or npm install -g @openai/codex')"
 fi
 
 # ── Step 3: IS_SANDBOX 自动检测 ──────────────────────────────────────────────
-step "检测沙箱环境"
+step "$(L '检测沙箱环境' 'Checking sandbox mode')"
 
 IS_SANDBOX_FLAG=""
 if [[ "$_SANDBOX" == "1" || "${IS_SANDBOX:-}" == "1" ]]; then
-  warn "启用危险模式（IS_SANDBOX=1）"
+  warn "$(L '启用危险模式（IS_SANDBOX=1）' 'Dangerous mode enabled (IS_SANDBOX=1)')"
   IS_SANDBOX_FLAG="IS_SANDBOX=1 "
 else
-  info "普通模式（如需危险模式：-s 参数或 IS_SANDBOX=1 环境变量）"
+  info "$(L '普通模式（如需危险模式：-s 参数或 IS_SANDBOX=1 环境变量）' 'Normal mode (for dangerous mode use -s or IS_SANDBOX=1)')"
 fi
 
 # ── Step 4: 服务配置 ──────────────────────────────────────────────────────────
-step "配置服务参数"
+step "$(L '配置服务参数' 'Configuring the service')"
 
 if [[ "$NON_INTERACTIVE" == "1" ]]; then
   # 非交互模式：直接用参数，校验必要字段
   RC_USER="${_USER:-${RC_USER:-admin}}"
   RC_PASS="${_PASS:-${RC_PASS:-}}"
   PORT="${_PORT:-${PORT:-8310}}"
-  [[ -z "$RC_PASS" ]] && err "非交互模式必须提供密码: -p <password>"
-  [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "端口号无效: $PORT"
-  ok "用户名: $RC_USER  端口: $PORT"
+  [[ -z "$RC_PASS" ]] && err "$(L '非交互模式必须提供密码: -p <password>' 'Non-interactive mode requires a password: -p <password>')"
+  [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "$(L "端口号无效: $PORT" "Invalid port: $PORT")"
+  ok "$(L "用户名: $RC_USER  端口: $PORT" "Username: $RC_USER  Port: $PORT")"
 else
-  echo -e "  ${GRAY}配置 Web 界面的登录账号和监听端口，安装完成后用此账号登录浏览器界面。${R}\n"
+  echo -e "  ${GRAY}$(L '配置 Web 界面的登录账号和监听端口，安装完成后用此账号登录浏览器界面。' 'Set the Web UI login and listen port; use this account to sign in from the browser.')${R}\n"
 
-  RC_USER=$(input "${_USER:-${RC_USER:-admin}}" "管理员用户名（Web 登录用）")
+  RC_USER=$(input "${_USER:-${RC_USER:-admin}}" "$(L '管理员用户名（Web 登录用）' 'Admin username (for Web login)')")
 
   while true; do
-    echo -n "  管理员密码（Web 登录用，输入不显示）: " > /dev/tty; read -rs RC_PASS < /dev/tty; echo "" > /dev/tty
-    [[ -z "$RC_PASS" ]] && { echo -e "  ${RED}✗ 密码不能为空${R}"; continue; }
-    echo -n "  再次输入密码确认: " > /dev/tty; read -rs RC_PASS2 < /dev/tty; echo "" > /dev/tty
-    [[ "$RC_PASS" != "$RC_PASS2" ]] && { echo -e "  ${RED}✗ 两次密码不一致，请重新输入${R}"; continue; }
-    [[ "$RC_PASS" == "changeme" ]] && warn "建议使用更安全的密码"
+    echo -n "  $(L '管理员密码（Web 登录用，输入不显示）' 'Admin password (for Web login, hidden)'): " > /dev/tty; read -rs RC_PASS < /dev/tty; echo "" > /dev/tty
+    [[ -z "$RC_PASS" ]] && { echo -e "  ${RED}✗ $(L '密码不能为空' 'Password cannot be empty')${R}"; continue; }
+    echo -n "  $(L '再次输入密码确认' 'Confirm password'): " > /dev/tty; read -rs RC_PASS2 < /dev/tty; echo "" > /dev/tty
+    [[ "$RC_PASS" != "$RC_PASS2" ]] && { echo -e "  ${RED}✗ $(L '两次密码不一致，请重新输入' 'Passwords do not match, try again')${R}"; continue; }
+    [[ "$RC_PASS" == "changeme" ]] && warn "$(L '建议使用更安全的密码' 'Consider a stronger password')"
     break
   done
 
-  PORT=$(input "${_PORT:-${PORT:-8310}}" "监听端口（浏览器访问 http://<IP>:<端口>）")
-  [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "端口号无效: $PORT"
+  PORT=$(input "${_PORT:-${PORT:-8310}}" "$(L '监听端口（浏览器访问 http://<IP>:<端口>）' 'Listen port (browse to http://<IP>:<port>)')")
+  [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1024 && "$PORT" -le 65535 ]] || err "$(L "端口号无效: $PORT" "Invalid port: $PORT")"
 
   echo ""
-  ok "配置完成：用户名 ${RC_USER}，端口 ${PORT}"
+  ok "$(L "配置完成：用户名 ${RC_USER}，端口 ${PORT}" "Configured: username ${RC_USER}, port ${PORT}")"
 fi
 
 # ── Step 5: Agent 代理配置 ───────────────────────────────────────────────────
-step "配置 Agent 代理"
+step "$(L '配置 Agent 代理' 'Configuring agent proxies')"
 
 CLAUDE_PROXY="${CLAUDE_PROXY:-}"
 CODEX_PROXY="${CODEX_PROXY:-}"
 AGENT_NO_PROXY="${AGENT_NO_PROXY:-localhost,127.0.0.1,::1}"
 
 if [[ "$NON_INTERACTIVE" == "1" ]]; then
-  info "非交互模式：沿用环境变量或现有 .env 中的 CLAUDE_PROXY / CODEX_PROXY"
+  info "$(L '非交互模式：沿用环境变量或现有 .env 中的 CLAUDE_PROXY / CODEX_PROXY' 'Non-interactive mode: keeping CLAUDE_PROXY / CODEX_PROXY from the environment or existing .env')"
 else
-  echo -e "  ${GRAY}代理只会注入 Claude/Codex CLI 启动环境，不会写入 RemoteCC 服务全局代理。留空表示不使用代理。${R}\n"
-  CODEX_PROXY=$(proxy_input "$CODEX_PROXY" "Codex 代理 URL（示例 http://127.0.0.1:7890，留空保持现有配置）")
-  CLAUDE_PROXY=$(proxy_input "$CLAUDE_PROXY" "Claude Code 代理 URL（示例 http://127.0.0.1:7890，留空保持现有配置）")
+  echo -e "  ${GRAY}$(L '代理只会注入 Claude/Codex CLI 启动环境，不会写入 RemoteCC 服务全局代理。留空表示不使用代理。' 'Proxies are only injected into the Claude/Codex CLI environment, never the RemoteCC service itself. Leave empty for no proxy.')${R}\n"
+  CODEX_PROXY=$(proxy_input "$CODEX_PROXY" "$(L 'Codex 代理 URL（示例 http://127.0.0.1:7890，留空保持现有配置）' 'Codex proxy URL (e.g. http://127.0.0.1:7890, empty keeps the current value)')")
+  CLAUDE_PROXY=$(proxy_input "$CLAUDE_PROXY" "$(L 'Claude Code 代理 URL（示例 http://127.0.0.1:7890，留空保持现有配置）' 'Claude Code proxy URL (e.g. http://127.0.0.1:7890, empty keeps the current value)')")
   if [[ -n "$CODEX_PROXY" || -n "$CLAUDE_PROXY" ]]; then
-    AGENT_NO_PROXY=$(input "$AGENT_NO_PROXY" "NO_PROXY（Agent CLI 使用）")
+    AGENT_NO_PROXY=$(input "$AGENT_NO_PROXY" "$(L 'NO_PROXY（Agent CLI 使用）' 'NO_PROXY (for agent CLIs)')")
   fi
 fi
 
-[[ -n "$CODEX_PROXY" ]] && ok "Codex 代理已配置"
-[[ -n "$CLAUDE_PROXY" ]] && ok "Claude Code 代理已配置"
-[[ -z "$CODEX_PROXY" && -z "$CLAUDE_PROXY" ]] && info "未配置 Agent 代理"
+[[ -n "$CODEX_PROXY" ]] && ok "$(L 'Codex 代理已配置' 'Codex proxy configured')"
+[[ -n "$CLAUDE_PROXY" ]] && ok "$(L 'Claude Code 代理已配置' 'Claude Code proxy configured')"
+[[ -z "$CODEX_PROXY" && -z "$CLAUDE_PROXY" ]] && info "$(L '未配置 Agent 代理' 'No agent proxy configured')"
 
 # ── Step 6: 写入 Agent 路径配置 ───────────────────────────────────────────────
-step "写入配置"
+step "$(L '写入配置' 'Writing configuration')"
 
 DEFAULT_AGENT="claude"
 [[ -z "$CLAUDE_BIN" && -n "$CODEX_BIN" ]] && DEFAULT_AGENT="codex"
 
 ENV_FILE="$SCRIPT_DIR/.env"
 cat > "$ENV_FILE" << EOF
-# RemoteCC 环境配置（由 install.sh 生成 $(date '+%Y-%m-%d %H:%M')）
+# $(L 'RemoteCC 环境配置（由 install.sh 生成' 'RemoteCC environment (generated by install.sh') $(date '+%Y-%m-%d %H:%M')$(L '）' ')')
 RC_USER=${RC_USER}
 RC_PASS=${RC_PASS}
 PORT=${PORT}
@@ -257,12 +288,12 @@ AGENT_NO_PROXY=${AGENT_NO_PROXY}
 ${IS_SANDBOX_FLAG:+IS_SANDBOX=1}
 EOF
 chmod 600 "$ENV_FILE"
-ok ".env 已生成（权限 600）"
+ok "$(L '.env 已生成（权限 600）' '.env written (mode 600)')"
 
 # ── Step 7: 安装依赖 ──────────────────────────────────────────────────────────
-step "安装依赖"
+step "$(L '安装依赖' 'Installing dependencies')"
 
-echo -e "  ${GRAY}安装服务端依赖（含 node-pty 原生编译）...${R}"
+echo -e "  ${GRAY}$(L '安装服务端依赖（含 node-pty 原生编译）...' 'Installing server dependencies (including native node-pty)...')${R}"
 
 # node-gyp 编译原生模块时使用 ~/.cache/node-gyp/<ver>/include/node/common.gypi，
 # 该缓存由 node-gyp 从 node 安装目录复制而来。
@@ -274,7 +305,7 @@ echo -e "  ${GRAY}安装服务端依赖（含 node-pty 原生编译）...${R}"
 NODE_VER_FULL=$(node -e "process.stdout.write(process.version.slice(1))")
 NODE_GYP_CACHE="$HOME/.cache/node-gyp/${NODE_VER_FULL}"
 if [[ -d "$NODE_GYP_CACHE" ]]; then
-  info "清除 node-gyp 旧缓存 $NODE_GYP_CACHE ..."
+  info "$(L "清除 node-gyp 旧缓存 $NODE_GYP_CACHE ..." "Clearing old node-gyp cache $NODE_GYP_CACHE ...")"
   rm -rf "$NODE_GYP_CACHE"
 fi
 
@@ -314,11 +345,11 @@ ensure_node_gyp_cache() {
 
 if [[ -n "$GPP_MAJOR" && "$GPP_MAJOR" -lt 10 ]]; then
   if [[ -f "${COMMON_GYPI}.rcc_bak" ]]; then
-    info "恢复上次安装遗留的 common.gypi 备份 ..."
+    info "$(L '恢复上次安装遗留的 common.gypi 备份 ...' 'Restoring the common.gypi backup left by a previous install ...')"
     mv "${COMMON_GYPI}.rcc_bak" "$COMMON_GYPI"
   fi
   if [[ -f "$COMMON_GYPI" ]] && grep -q "gnu++20" "$COMMON_GYPI" 2>/dev/null; then
-    info "gcc $GPP_MAJOR 不支持 gnu++20，临时 patch node 安装目录 common.gypi ..."
+    info "$(L "gcc $GPP_MAJOR 不支持 gnu++20，临时 patch node 安装目录 common.gypi ..." "gcc $GPP_MAJOR lacks gnu++20, temporarily patching common.gypi in the node install ...")"
     cp "$COMMON_GYPI" "${COMMON_GYPI}.rcc_bak"
     patch_gypi_std "$COMMON_GYPI"
     PATCHED=true
@@ -333,22 +364,22 @@ restore_common_gypi
 trap - EXIT
 
 if ! node -e "require('$SCRIPT_DIR/server/node_modules/node-pty')" 2>/dev/null; then
-  err "node-pty 编译失败。请确认 g++ 已安装：\n  CentOS: yum install gcc-c++\n  Ubuntu: apt install g++ build-essential"
+  err "$(L 'node-pty 编译失败。请确认 g++ 已安装：' 'node-pty failed to build. Make sure g++ is installed:')\n  CentOS: yum install gcc-c++\n  Ubuntu: apt install g++ build-essential"
 fi
-ok "服务端依赖完成"
+ok "$(L '服务端依赖完成' 'Server dependencies installed')"
 
-echo -e "  ${GRAY}安装前端依赖...${R}"
+echo -e "  ${GRAY}$(L '安装前端依赖...' 'Installing frontend dependencies...')${R}"
 (cd "$SCRIPT_DIR/client" && npm install --loglevel=warn 2>&1 | tail -2)
-ok "前端依赖完成"
+ok "$(L '前端依赖完成' 'Frontend dependencies installed')"
 
 # ── Step 8: 构建前端 ──────────────────────────────────────────────────────────
-step "构建前端"
+step "$(L '构建前端' 'Building the frontend')"
 
 (cd "$SCRIPT_DIR/client" && npm run build 2>&1 | tail -3)
-ok "前端已构建 → client/dist/"
+ok "$(L '前端已构建 → client/dist/' 'Frontend built → client/dist/')"
 
 # ── Step 9: 安装命令行工具 ────────────────────────────────────────────────────
-step "安装命令行工具"
+step "$(L '安装命令行工具' 'Installing command-line tools')"
 
 BIN_DIR="/usr/local/bin"
 for tool in remotecc rcc-tui rcc-server; do
@@ -358,7 +389,7 @@ for tool in remotecc rcc-tui rcc-server; do
   if ln -sf "$src" "$BIN_DIR/$tool" 2>/dev/null; then
     ok "$tool → $BIN_DIR/$tool"
   else
-    warn "无法写入 $BIN_DIR，跳过 $tool（可手动 ln -s $src $BIN_DIR/$tool）"
+    warn "$(L "无法写入 $BIN_DIR，跳过 $tool（可手动 ln -s $src $BIN_DIR/$tool）" "Cannot write to $BIN_DIR, skipping $tool (link it manually: ln -s $src $BIN_DIR/$tool)")"
   fi
 done
 
@@ -367,9 +398,9 @@ sed -i "s|RCC_DIR=\"/paddle/project/local_tools/remote_cc\"|RCC_DIR=\"$SCRIPT_DI
   "$SCRIPT_DIR/rcc-server" 2>/dev/null || true
 
 # ── Step 10: 启动服务 ─────────────────────────────────────────────────────────
-step "启动服务"
+step "$(L '启动服务' 'Starting the service')"
 
-if [[ "$NON_INTERACTIVE" == "1" && "$_YES" == "1" ]] || confirm "y" "现在启动 RemoteCC 服务?"; then
+if [[ "$NON_INTERACTIVE" == "1" && "$_YES" == "1" ]] || confirm "y" "$(L '现在启动 RemoteCC 服务?' 'Start the RemoteCC service now?')"; then
   # 用 rcc-server stop 正确停止 watchdog + node（同时清 pid 文件）
   bash "$SCRIPT_DIR/rcc-server" stop 2>/dev/null || true
   # 额外等待 node 进程彻底消失，防止 lock 文件残留
@@ -388,9 +419,9 @@ if [[ "$NON_INTERACTIVE" == "1" && "$_YES" == "1" ]] || confirm "y" "现在启�
   done
 
   if [[ -f "$HOME/.rcc/local.token" ]]; then
-    ok "服务已启动（端口 $PORT）"
+    ok "$(L "服务已启动（端口 $PORT）" "Service started (port $PORT)")"
   else
-    err "服务启动失败，查看日志: cat /tmp/rcc.log"
+    err "$(L '服务启动失败，查看日志: cat /tmp/rcc.log' 'Service failed to start; see the log: cat /tmp/rcc.log')"
   fi
 fi
 
@@ -400,18 +431,18 @@ IFACE_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' \
 
 echo ""
 echo -e "  ${D}${HR}${R}"
-echo -e "\n  ${GREEN}${B}✓ 部署完成！${R}\n"
-echo -e "  ${B}Web 访问${R}"
-echo -e "    本机:    ${CYAN}http://localhost:${PORT}${R}"
-echo -e "    局域网:  ${CYAN}http://${IFACE_IP}:${PORT}${R}"
+echo -e "\n  ${GREEN}${B}✓ $(L '部署完成！' 'Setup complete!')${R}\n"
+echo -e "  ${B}$(L 'Web 访问' 'Web access')${R}"
+echo -e "    $(L '本机:  ' 'Local:')    ${CYAN}http://localhost:${PORT}${R}"
+echo -e "    $(L '局域网:' 'LAN:  ')    ${CYAN}http://${IFACE_IP}:${PORT}${R}"
 echo ""
-echo -e "  ${B}账号${R}  ${RC_USER} / ${D}(已配置)${R}"
+echo -e "  ${B}$(L '账号' 'Account')${R}  ${RC_USER} / ${D}$(L '(已配置)' '(configured)')${R}"
 echo ""
-echo -e "  ${B}常用命令${R}"
-echo -e "    ${CYAN}remotecc start${R}    启动服务"
-echo -e "    ${CYAN}remotecc stop${R}     停止服务"
-echo -e "    ${CYAN}remotecc status${R}   服务状态"
-echo -e "    ${CYAN}remotecc ls${R}       查看会话"
-echo -e "    ${CYAN}rcc-tui${R}      交互式 TUI"
+echo -e "  ${B}$(L '常用命令' 'Common commands')${R}"
+echo -e "    ${CYAN}remotecc start${R}    $(L '启动服务' 'start the service')"
+echo -e "    ${CYAN}remotecc stop${R}     $(L '停止服务' 'stop the service')"
+echo -e "    ${CYAN}remotecc status${R}   $(L '服务状态' 'service status')"
+echo -e "    ${CYAN}remotecc ls${R}       $(L '查看会话' 'list sessions')"
+echo -e "    ${CYAN}rcc-tui${R}      $(L '交互式 TUI' 'interactive TUI')"
 echo ""
 echo -e "  ${D}${HR}${R}\n"

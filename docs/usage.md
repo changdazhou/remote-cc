@@ -364,6 +364,8 @@ Displays a large-text banner and session list on launch. `rcc-tui` reads `~/.rcc
 
 **终端渲染**：改用 WebGL 渲染，选区与文字对齐；字体、字号变化后同步列数，PC 端右侧不再截掉字符。
 
+**命令行英文**：安装向导、`rcc-tui`、`remotecc` 支持英文，默认中文，用 `--lang en` 或 `RCC_LANG=en` 切换。
+
 **滚动**：上划查看历史不再被拉回，10 秒无操作后自动回到底部；新增「回到底部」按钮，手机滑动支持惯性。
 
 **配色**：Agent 查询终端颜色时正常应答，配色跟随主题；在 Agent 会话中启动服务时，新会话不再继承关闭颜色等设置。

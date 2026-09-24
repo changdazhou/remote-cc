@@ -113,10 +113,12 @@ This is not mirroring or proxying — multiple subscribers share the same PTY ma
 ```bash
 git clone https://github.com/changdazhou/remote-cc.git
 cd remote-cc
-bash install.sh
+bash install.sh --lang en
 ```
 
 The install script is fully interactive and auto-detects your environment.
+
+The installer, `rcc-tui` and CLI messages default to Chinese. `--lang en` (or `RCC_LANG=en bash install.sh`) switches them to English and saves the choice to `~/.rcc/lang`, so `rcc-tui` and `remotecc` stay in English afterwards. Prefix a command with `RCC_LANG=en` or `RCC_LANG=zh` to switch just once. The Web UI language is set separately on its settings page.
 
 RemoteCC auto-detects Claude Code, Codex, and Grok; at least one of them must be installed. New sessions can choose the agent and optionally pass launch args (for example `--model xxx`) straight to the agent CLI. History resume supports Claude Code's `~/.claude/projects/`, Codex session records from `~/.codex/sessions/`, and Grok sessions from `~/.grok/sessions/`.
 
@@ -158,6 +160,7 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 ### 2026-09-24
 
 - **Terminal rendering**: WebGL renderer with selections aligned to text; font or size changes re-measure and resync columns, so the right edge is no longer cut off on desktop
+- **English CLI**: the installer, `rcc-tui` and `remotecc` support English; Chinese by default, switch with `--lang en` or `RCC_LANG=en`
 - **Scrolling**: reading history is no longer pulled back by new output, and the view returns to the bottom after 10 s idle; new "jump to bottom" button; touch scrolling gains momentum
 - **Colors**: agent color queries are answered so colors follow the theme; when the service is started from inside an agent session, new sessions no longer inherit its color-disabling settings
 - **Uploads**: live progress, speed and ETA, cancellable; 10 GB per-file limit

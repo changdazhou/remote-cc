@@ -225,6 +225,15 @@ do_log() {
   tail -f "$LOG_FILE"
 }
 
+# 界面语言：RCC_LANG > ~/.rcc/lang > 中文
+rcc_norm_lang() { case "$1" in [Ee][Nn]*) echo en ;; [Zz][Hh]*) echo zh ;; esac; }
+rcc_lang() {
+  local v; v="$(rcc_norm_lang "${RCC_LANG:-}")"
+  [[ -z "$v" && -f "$HOME/.rcc/lang" ]] && v="$(rcc_norm_lang "$(head -n 1 "$HOME/.rcc/lang")")"
+  echo "${v:-zh}"
+}
+L() { if [[ "$(rcc_lang)" == en ]]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
 case "$cmd" in
   start)   do_start   ;;
   stop)    do_stop    ;;
@@ -236,12 +245,12 @@ case "$cmd" in
   *)
     echo "Usage: rcc-server [start|stop|restart|reload|status|log]"
     echo ""
-    echo "  start   — 启动服务（proxy.js 常驻，管理 app.js 子进程）"
-    echo "  stop    — 完全停止服务"
-    echo "  restart — 完全重启（WS 断开，PTY 终止）"
-    echo "  reload  — 热重载 app.js（WS/PTY 不中断）"
-    echo "  status  — 查看运行状态"
-    echo "  log     — 实时查看日志"
+    echo "  start   — $(L '启动服务（proxy.js 常驻，管理 app.js 子进程）' 'start the service (proxy.js stays up and manages app.js)')"
+    echo "  stop    — $(L '完全停止服务' 'stop the service completely')"
+    echo "  restart — $(L '完全重启（WS 断开，PTY 终止）' 'full restart (WS drops, PTYs end)')"
+    echo "  reload  — $(L '热重载 app.js（WS/PTY 不中断）' 'hot-reload app.js (WS/PTY stay up)')"
+    echo "  status  — $(L '查看运行状态' 'show status')"
+    echo "  log     — $(L '实时查看日志' 'follow the log')"
     exit 1
     ;;
 esac
