@@ -577,7 +577,7 @@ function connectEntryWS(entry) {
           resumeSessionId: entry.resumeSessionId || '',
           extraArgs: entry.extraArgs || '',
           requestId: entry.requestId || '',
-          name: entry.name,
+          name: entry.customName || '',
           cols, rows,
         }));
       }
@@ -596,6 +596,7 @@ function connectEntryWS(entry) {
       switch (msg.type) {
         case 'session_id': {
           const realId = msg.sessionId;
+          if (msg.name) entry.name = msg.name;
           if (entry.sid !== realId) {
             const oldSid = entry.sid;
             // Move termRef
@@ -836,7 +837,7 @@ async function startEntryHttp(entry) {
             resumeSessionId: entry.resumeSessionId || '',
             extraArgs: entry.extraArgs || '',
             requestId: entry.requestId || '',
-            name: entry.name,
+            name: entry.customName || '',
             cols,
             rows,
           });
@@ -945,7 +946,9 @@ function startSession({ workingDir, name, resumeSessionId, agent = 'claude', ext
     ws: null,
     alive: true,
     wsStarted: false,
-    name: name || ((workingDir || '~').split('/').pop() || 'root'),
+    // 未填名称时先显示目录名占位，服务端返回真实名称后再更新
+    name: name || ((workingDir || '~').split('/').filter(Boolean).pop() || '/'),
+    customName: name || '',
     workingDir: workingDir || '~',
     agent,
     resumeSessionId: resumeSessionId || '',

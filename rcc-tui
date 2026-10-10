@@ -599,8 +599,8 @@ function doAttach(sp, sname, onDetach, sessionId) {
 
   const sock = net.createConnection(sp);
 
-  // 清除 stdin 残留监听器
-  process.stdin.removeAllListeners('data');
+  // 只移除菜单的 keypress 监听器。不能清掉所有 data 监听器：其中有 readline 的按键解码器，
+  // 清掉后回到菜单收不到按键，stdin 也没有活跃句柄，进程会直接退出
   process.stdin.removeAllListeners('keypress');
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.resume();
@@ -636,7 +636,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
     if (detached) return;
     detached = true;
 
-    process.stdin.removeAllListeners('data');
+    process.stdin.removeListener('data', onStdinData);
     sock.removeAllListeners();
     process.stdout.removeListener('resize', sendResize);
     clearInterval(watchdog);
@@ -644,8 +644,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
     if (!sock.destroyed) try { sock.destroy(); } catch (_) {}
 
     if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
-    // 不调 resume()，让 stdin 保持 paused 状态
-    // menu() 会通过 setRawMode(true) 重新激活它
+    // stdin 先保持 paused，由下一个 menu() 恢复读取
     process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
 
     const msg = fromEscape
@@ -656,7 +655,6 @@ function doAttach(sp, sname, onDetach, sessionId) {
     // CC 退出时等 6s（服务端 5s 后清理 session），确保 meta 文件已更新
     const delay = fromEscape ? 300 : 6000;
     setTimeout(() => {
-      process.stdin.removeAllListeners('data');
       process.stdin.removeAllListeners('keypress');
       // pause 确保不在 flowing 模式，menu() 的 setRawMode+on(keypress) 能正常工作
       process.stdin.pause();
@@ -669,7 +667,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
     if (!serverAlive(serverInfo())) {
       detached = true;
       clearInterval(watchdog);
-      process.stdin.removeAllListeners('data');
+      process.stdin.removeListener('data', onStdinData);
       sock.removeAllListeners();
       if (!sock.destroyed) try { sock.destroy(); } catch (_) {}
       process.stdout.removeListener('resize', sendResize);
@@ -685,8 +683,6 @@ function doAttach(sp, sname, onDetach, sessionId) {
 }
 
 function returnToMainAfterDetach() {
-  // doAttach removes readline's internal data listeners; re-register before menu().
-  readline.emitKeypressEvents(process.stdin);
   pageMain().catch(err => {
     wr(A.show + '\n' + A.red + L('  错误: ', '  Error: ') + err.message + A.R + '\n');
     process.exit(1);
@@ -758,7 +754,7 @@ function menu(title, items, opts = {}) {
       process.stdin.removeListener('keypress', onKey);
       // 不再重复调用 emitKeypressEvents，避免叠加内部 data 监听器
       if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
-      // 不调 resume()，保持 paused 状态，下一个 menu() 调用会通过 setRawMode 激活
+      // 不在这里 resume()，下一个 menu() 会恢复读取
       wr(A.show);
       resolve(v);
     };
@@ -776,6 +772,8 @@ function menu(title, items, opts = {}) {
     process.stdin.removeAllListeners('keypress');
     if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.on('keypress', onKey);
+    // 从会话断开后 stdin 处于 paused，加监听器不会自动恢复读取
+    process.stdin.resume();
     render();
   });
 }
@@ -914,7 +912,7 @@ async function pageSession(s) {
 
   switch (items[idx]._type) {
     case 'attach':
-      doAttach(sp, s.name, pageMain, s.sessionId);
+      doAttach(sp, s.name, returnToMainAfterDetach, s.sessionId);
       break;
     case 'nosock':
       await notice(L('Socket 不可用，请确认服务运行中', 'Socket unavailable; make sure the service is running'), A.red, 1800);
@@ -992,9 +990,8 @@ async function doDeleteSession(s, info) {
 async function pageNew(info, agent = 'claude') {
   // 默认当前目录，和 CLI 直接运行的逻辑一致
   const workingDir = process.cwd();
-  const name = path.basename(workingDir) || 'session';
   const extraArgs = await askExtraArgs();
-  await doCreate(info, workingDir, name, '', agent, extraArgs);
+  await doCreate(info, workingDir, dirSessionName(workingDir), '', agent, extraArgs);
 }
 
 // ── 恢复历史对话 ──────────────────────────────────────────────────────────────
@@ -1045,10 +1042,15 @@ async function pageHistorySessions(info, project, agent = 'claude') {
 
   const sess = items[idx]._data;
   const sessCwd = sess.cwd || '~';
-  const base = path.basename(sessCwd) || 'session';
   // 直接用历史会话的目录和名称，只询问可选的启动参数
   const extraArgs = await askExtraArgs();
-  await doCreate(info, sessCwd, base, sess.sessionId, agent, extraArgs);
+  await doCreate(info, sessCwd, dirSessionName(sessCwd), sess.sessionId, agent, extraArgs);
+}
+
+// 和服务端默认命名一致：展开 ~ 后取目录名，根目录用 /
+function dirSessionName(dir) {
+  const full = path.resolve(expandHome(dir || '~'));
+  return path.basename(full) || full;
 }
 
 function askExtraArgs() {

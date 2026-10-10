@@ -161,6 +161,8 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 - **Scrolling**: scrolling up while an agent keeps printing no longer snaps back to the bottom or flickers; desktop now also holds new output while you scroll back and writes it once you return to the bottom
 - **Terminal width**: columns are re-measured when the WebGL renderer falls back, so the right edge is no longer occasionally cut off on mobile
+- **TUI detach**: `Ctrl+]` in `rcc-tui` returns to the menu again instead of dropping to the shell
+- **Session naming**: sessions without a name are named after the expanded working directory — `~` uses the home directory name, the root directory is `/`
 
 ### 2026-09-24
 

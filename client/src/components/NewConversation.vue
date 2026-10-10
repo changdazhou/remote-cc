@@ -232,8 +232,7 @@ const dirPickerStart = computed(() => {
 });
 
 const namePlaceholder = computed(() => {
-  const base = workingDir.value.split('/').filter(Boolean).pop() || 'root';
-  return base;
+  return workingDir.value.split('/').filter(Boolean).pop() || '/';
 });
 
 function shortPath(p) {
@@ -263,9 +262,8 @@ function onEnterKey(e, action) {
 function start() {
   if (!canStart.value) return;
   const dir  = workingDir.value.trim() || '~';
-  const base = dir.split('/').filter(Boolean).pop() || 'root';
-  const name = sessionName.value.trim() || base;
-  emit('start', { workingDir: dir, name, agent: agent.value, extraArgs: extraArgs.value.trim() });
+  // 留空时由服务端按展开后的目录名命名（如 ~ → 用户主目录名）
+  emit('start', { workingDir: dir, name: sessionName.value.trim(), agent: agent.value, extraArgs: extraArgs.value.trim() });
 }
 
 function toggleDirPicker() {
@@ -401,8 +399,8 @@ function startResume() {
 }
 
 function shortBase(p) {
-  if (!p) return 'root';
-  return p.split('/').filter(Boolean).pop() || 'root';
+  if (!p) return '/';
+  return p.split('/').filter(Boolean).pop() || '/';
 }
 
 function fmtDate(iso) {

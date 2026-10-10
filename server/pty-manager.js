@@ -301,6 +301,10 @@ function startSocketServer(sessionId) {
 
 // ── Create session ────────────────────────────────────────────────────────────
 
+function defaultSessionName(cwd) {
+  return path.basename(cwd) || cwd || '/';
+}
+
 function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, extraArgs, requestId, cols = 80, rows = 24, env: clientEnv = {} }) {
   // 防重复：同一个 wsId 已有 session，直接复用
   if (wsToSession.has(wsId)) {
@@ -348,9 +352,8 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, ext
     try { ws.send(JSON.stringify({ type: 'error', message: `Max sessions reached (${MAX_SESSIONS} alive). Kill or delete existing sessions first.` })); } catch (_) {}
     return;
   }
-  // Default name: <basename(cwd)>
-  const baseName    = path.basename(cwd) || 'root';
-  const sessionName = (name && name.trim()) ? name.trim() : baseName;
+  // 未指定名称时用展开后的目录名（客户端拿不到 ~ 的真实路径，统一由这里决定）
+  const sessionName = (typeof name === 'string' && name.trim()) ? name.trim() : defaultSessionName(cwd);
   const sessionId   = uuidv4();
   const logPath     = path.join(LOG_DIR, `${sessionId}.log`);
   const logStream = fs.createWriteStream(logPath, { flags: 'a' });
