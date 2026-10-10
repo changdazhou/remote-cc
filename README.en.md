@@ -157,6 +157,11 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 ## Changelog
 
+### 2026-10-10
+
+- **Scrolling**: scrolling up while an agent keeps printing no longer snaps back to the bottom or flickers; desktop now also holds new output while you scroll back and writes it once you return to the bottom
+- **Terminal width**: columns are re-measured when the WebGL renderer falls back, so the right edge is no longer occasionally cut off on mobile
+
 ### 2026-09-24
 
 - **Terminal rendering**: WebGL renderer with selections aligned to text; font or size changes re-measure and resync columns, so the right edge is no longer cut off on desktop
@@ -175,14 +180,14 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 - **Stability**: input is no longer lost during WebSocket reconnect, and the HTTP fallback retries WebSocket automatically
 - **Fixes**: session rename, history list refresh, file preview, mobile copy mode and Enter-to-send, and more
 
+<details>
+<summary>Older changelog</summary>
+
 ### 2026-07-01
 
 - **Agent terminal copy and paste**: fixes PC selection coordinate drift; `Ctrl/Cmd+C` copies when text is selected and keeps interrupt behavior when nothing is selected; `Ctrl/Cmd+V` now uses the browser clipboard path to avoid Windows/X11 server-side clipboard failures
 - **Reading history while tasks run**: manual scrolling pauses bottom lock during Agent output, then returns to the bottom after a short idle delay
 - **File browser directory state**: remembers the last visited directory and restores it after refresh; changing the default directory clears that remembered state
-
-<details>
-<summary>Older changelog</summary>
 
 ### 2026-06-16
 

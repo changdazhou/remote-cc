@@ -373,6 +373,8 @@ let autoScrollTimer = null;
 let scrollIdleTimer = null;      // 上划后无操作一段时间自动回到底部
 const SCROLL_IDLE_RESUME_MS = 10000;
 let lastViewportY = 0;
+let lastScrollTop = 0;
+let scrollBackNudgeRaf = 0;
 let lastTouchY = null;
 let touchSamples = [];           // 最近的触摸位置，用于计算松手时的惯性速度
 let inertiaRaf = 0;
@@ -444,12 +446,16 @@ function canScrollBack() {
 function onViewportScroll() {
   if (mobileCopyMode.value) return;
   const y = term?.buffer?.active?.viewportY ?? 0;
+  const top = boundViewport?.scrollTop ?? 0;
   const movedUp = y < lastViewportY;
+  const movedDown = y > lastViewportY || top > lastScrollTop;
   lastViewportY = y;
+  lastScrollTop = top;
   if (Date.now() < userScrollIntentUntil) {
     if (movedUp) setUserScrolled(true);
-    else if (isNearBottom() && userScrolled) {
-      // 用户自己滑回底部 → 恢复自动跟随，冲刷缓存
+    else if (movedDown && isNearBottom() && userScrolled) {
+      // 用户自己往下滑回底部 → 恢复自动跟随，冲刷缓存。
+      // 触控板上划不足一行时 viewportY 不变、仍算在底部，不能据此恢复跟随
       setUserScrolled(false);
       flushPending();
     }
@@ -472,12 +478,42 @@ function markUserScrollIntent() {
 // 往上看历史：立即暂停跟随，不等滚动事件，避免刚离开底部就被新输出拉回去
 function beginScrollBack() {
   markUserScrollIntent();
-  if (canScrollBack()) setUserScrolled(true);
+  if (!canScrollBack()) return;
+  setUserScrolled(true);
+  clearTimeout(autoScrollTimer);
+  // 不足一行的上划会被 xterm 取整回底部，新输出到来时又被带着走；等 xterm 处理完这次滚动，仍在底部就主动上移一行
+  if (isNearBottom() && !scrollBackNudgeRaf) {
+    scrollBackNudgeRaf = requestAnimationFrame(() => {
+      scrollBackNudgeRaf = 0;
+      if (userScrolled && isNearBottom() && canScrollBack()) term?.scrollLines(-1);
+    });
+  }
 }
 
 function onRootWheel(e) {
   if (e.deltaY < 0) beginScrollBack();
   else markUserScrollIntent();
+}
+
+// 输出期间 xterm 每帧都会改 scrollTop 并忽略随后的一次滚动事件，用户同一帧的滚轮滚动会并进这次事件被吞掉，
+// 视图停在底部、又被判定为回到底部而恢复跟随。离开底部这一下改为直接滚缓冲区，不经过 scrollTop
+let wheelPartialLines = 0;
+function onTermWheel(e) {
+  if (e.deltaY >= 0 || e.shiftKey || !term || !isNearBottom() || !canScrollBack()) {
+    wheelPartialLines = 0;
+    return true;
+  }
+  const screen = term.element?.querySelector('.xterm-screen');
+  const rowHeight = screen && term.rows ? screen.clientHeight / term.rows : 16;
+  let lines = e.deltaY;
+  if (e.deltaMode === WheelEvent.DOM_DELTA_PIXEL) lines /= rowHeight || 16;
+  else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) lines *= term.rows;
+  wheelPartialLines += lines;
+  const amount = Math.max(1, Math.floor(Math.abs(wheelPartialLines)));
+  wheelPartialLines = 0;
+  if (e.cancelable) e.preventDefault();
+  term.scrollLines(-amount);
+  return false;
 }
 
 function onRootTouchStart(e) {
@@ -576,6 +612,7 @@ function bindViewport(vp) {
   // 滚轮/触摸的事件目标通常是 .xterm-screen 而不是 viewport，要在 xterm 根元素上监听
   boundScrollRoot = term?.element || vp.parentElement || vp;
   lastViewportY = term?.buffer?.active?.viewportY ?? 0;
+  lastScrollTop = vp.scrollTop;
   vp.addEventListener('scroll', onViewportScroll, { passive: true });
   boundScrollRoot.addEventListener('mousedown', onRootMouseDown, { passive: true, capture: true });
   boundScrollRoot.addEventListener('wheel', onRootWheel, { passive: true, capture: true });
@@ -595,6 +632,8 @@ function unbindViewport() {
   boundScrollRoot?.removeEventListener('touchend', onRootTouchEnd, { capture: true });
   boundScrollRoot?.removeEventListener('touchcancel', onRootTouchEnd, { capture: true });
   stopInertia();
+  if (scrollBackNudgeRaf) cancelAnimationFrame(scrollBackNudgeRaf);
+  scrollBackNudgeRaf = 0;
   boundViewport = null;
   boundScrollRoot = null;
 }
@@ -603,9 +642,12 @@ function scrollToBottomSoon() {
   if (mobileCopyMode.value || userScrolled) return;
   autoScrollUntil = Date.now() + 500;
   clearTimeout(autoScrollTimer);
+  // 定时器触发前用户可能已经上划，执行时要再判断一次，否则会把刚离开底部的视图拉回去
+  const shouldFollow = () => term && !userScrolled && !mobileCopyMode.value;
   autoScrollTimer = setTimeout(() => {
-    term?.scrollToBottom();
-    requestAnimationFrame(() => term?.scrollToBottom());
+    if (!shouldFollow()) return;
+    term.scrollToBottom();
+    requestAnimationFrame(() => { if (shouldFollow()) term.scrollToBottom(); });
   }, 16);
 }
 
@@ -683,7 +725,9 @@ function smartWrite(data, options = {}) {
   if (!output) return;
   const item = { data: output, suppressInput: Boolean(options.suppressInput) };
   if (userScrolled || mobileCopyMode.value) hasNewOutput.value = true;
-  if (mobileCopyMode.value || (isMobileViewport() && userScrolled)) {
+  // 上划期间边写边看会和用户抢滚动位置：xterm 每次写入都重设 scrollTop 并吞掉下一次滚动事件，
+  // 回滚缓冲写满后每行都会挪动视图，用户的滚轮被吞、画面闪烁。所以桌面和手机都先缓存
+  if (mobileCopyMode.value || userScrolled) {
     pendingWrites.push(item);
     pendingBytes += output.length;
     // 缓存过多时不能丢弃中间片段（会打乱终端控制序列），直接恢复跟随并全部写入
@@ -936,6 +980,8 @@ onMounted(() => {
     // currentLine 统一由 App.vue 的 onTermInput 通过 trackInput() 更新
     // 这里不再重复处理，避免双重追踪
   });
+
+  term.attachCustomWheelEventHandler(onTermWheel);
 
   // ── 复制：Ctrl+Shift+C 或右键 Copy ──────────────────────────────────────
   term.attachCustomKeyEventHandler(e => {
