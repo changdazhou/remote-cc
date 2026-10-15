@@ -81,6 +81,18 @@
       <span v-if="hasNewOutput">新输出</span>
     </button>
 
+    <button
+      v-if="copyHint.text"
+      class="copy-hint"
+      :class="{ pending: copyHint.pending, ok: copyHint.ok }"
+      :title="copyHint.text"
+      @mousedown.prevent
+      @click.stop="onCopyHintClick"
+    >
+      <AppIcon :name="copyHint.ok ? 'check' : 'copy'" />
+      <span>{{ copyHint.text }}</span>
+    </button>
+
     <div v-if="uploading && termUpload.name" class="img-upload-progress">
       <div class="iup-row">
         <AppIcon name="spinner" spin />
@@ -797,6 +809,28 @@ function canAnswerTerminalQueries() {
   return recentlyActive(TERMINAL_RESPONSE_ACTIVE_MS);
 }
 
+// Agent 接管鼠标选中后用 OSC 52（ESC ] 52 ; c ; <base64>）请求终端写剪贴板。
+// 只处理写入，读取请求（?）忽略，避免把用户剪贴板交给程序；回放历史或不在前台的设备不写
+function onOsc52(data) {
+  const sep = data.indexOf(';');
+  const payload = sep >= 0 ? data.slice(sep + 1) : '';
+  if (!payload || payload === '?') return true;
+  if (suppressingTerminalResponses()) return true;
+  if (typeof document !== 'undefined') {
+    if (document.visibilityState === 'hidden') return true;
+    if (typeof document.hasFocus === 'function' && !document.hasFocus()) return true;
+  }
+  let text;
+  try {
+    const bin = atob(payload.replace(/\s+/g, ''));
+    text = new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+  } catch (_) {
+    return true;
+  }
+  copyFromAgent(text);
+  return true;
+}
+
 function suppressingTerminalResponses() {
   return replaySuppressDepth > 0 || terminalResponseWriteSuppressDepth > 0 || Date.now() < terminalResponseSuppressUntil;
 }
@@ -927,8 +961,10 @@ onMounted(() => {
     cursorStyle: settings.cursorStyle,
     scrollback:  settings.scrollback,
     smoothScrollDuration: 0,    // 每个滚轮事件都做动画会让触控板滚动发粘
+    macOptionClickForcesSelection: true,  // Mac 上 Option+拖动绕过程序的鼠标捕获，用原生选区
     allowProposedApi: true,
   });
+  term.parser.registerOscHandler(52, onOsc52);
 
   fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
@@ -1073,6 +1109,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  clearTimeout(copyHintTimer);
   resizeObserver?.disconnect();
   clearTimeout(resizeTimer);
   clearTimeout(uploadHintTimer);
@@ -1298,14 +1335,53 @@ function onMobilePaste(e) {
 }
 
 // ── 复制工具函数（兼容 HTTP 非安全上下文） ───────────────────────────────────
+// 返回是否写入成功。HTTP 下没有 Clipboard API，降级的 execCommand 只在用户操作后短时间内有效
 function copyText(text) {
-  if (!text) return;
+  if (!text) return Promise.resolve(false);
   // 优先用 Clipboard API（HTTPS / localhost）
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-  } else {
-    fallbackCopy(text);
+  if (navigator.clipboard?.writeText && window.isSecureContext !== false) {
+    return navigator.clipboard.writeText(text).then(() => true, () => fallbackCopy(text));
   }
+  return Promise.resolve(fallbackCopy(text));
+}
+
+// Agent 通过 OSC 52 发来的复制：浏览器拒绝时（HTTP 且已过了用户操作的有效期）留着文本，
+// 提示用户点一下，点击本身就是用户操作，此时再复制一定能写入
+const COPY_HINT_MS = 15000;
+const copyHint = reactive({ text: '', pending: '', ok: false });
+let copyHintTimer = null;
+
+function showCopyHint(text, { pending = '', ok = false, ms = COPY_HINT_MS } = {}) {
+  clearTimeout(copyHintTimer);
+  copyHint.text = text;
+  copyHint.pending = pending;
+  copyHint.ok = ok;
+  copyHintTimer = setTimeout(() => { copyHint.text = ''; copyHint.pending = ''; }, ms);
+}
+
+function copyFromAgent(text) {
+  copyText(text).then(ok => {
+    if (ok) showCopyHint(`已复制 ${text.length} 个字符`, { ok: true, ms: 1500 });
+    else showCopyHint(`Agent 请求复制 ${text.length} 个字符，点击复制`, { pending: text });
+  });
+}
+
+function onCopyHintClick() {
+  const text = copyHint.pending;
+  if (!text) { copyHint.text = ''; return; }
+  // 必须在点击事件里同步调用，不能等 Promise，否则又失去用户操作的有效期
+  const ok = fallbackCopy(text);
+  if (ok) {
+    showCopyHint(`已复制 ${text.length} 个字符`, { ok: true, ms: 1500 });
+  } else if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => showCopyHint(`已复制 ${text.length} 个字符`, { ok: true, ms: 1500 }),
+      () => showCopyHint('浏览器拒绝写入剪贴板', { ms: 3000 }),
+    );
+  } else {
+    showCopyHint('浏览器拒绝写入剪贴板', { ms: 3000 });
+  }
+  nextTick(() => focusTerm());
 }
 
 function getTerminalBufferText() {
@@ -1424,15 +1500,33 @@ function onTermTouchMove(e) {
 }
 
 function fallbackCopy(text) {
-  // 降级：创建 textarea，execCommand('copy')
+  // 降级：创建 textarea，execCommand('copy')；之后把焦点还给原来的元素，避免终端失焦收不到输入。
+  // 同时在 copy 事件里直接写入文本，不依赖 textarea 选区（部分浏览器选区为空时不复制）
+  const prevFocus = document.activeElement;
   const ta = document.createElement('textarea');
   ta.value = text;
+  ta.setAttribute('readonly', '');  // 手机上不弹出键盘
   ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
   document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  try { document.execCommand('copy'); } catch (_) {}
+  const onCopy = e => {
+    if (!e.clipboardData) return;
+    e.clipboardData.setData('text/plain', text);
+    e.preventDefault();
+  };
+  document.addEventListener('copy', onCopy, true);
+  let ok = false;
+  try {
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    ok = document.execCommand('copy');
+  } catch (_) {
+    ok = false;
+  }
+  document.removeEventListener('copy', onCopy, true);
   document.body.removeChild(ta);
+  try { prevFocus?.focus?.({ preventScroll: true }); } catch (_) {}
+  return ok;
 }
 
 // ── 粘贴：优先 Clipboard API，失败则提示 ─────────────────────────────────────
@@ -1742,6 +1836,33 @@ function ctxClear()     { ctxMenu.show = false; term?.clear(); }
   border-color: color-mix(in srgb, var(--neon) 45%, transparent);
 }
 .jump-bottom-btn:hover { background: var(--panel2); }
+.copy-hint {
+  position: absolute;
+  left: 50%;
+  top: 10px;
+  transform: translateX(-50%);
+  z-index: 8;
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: calc(100% - 20px);
+  height: 30px; padding: 0 12px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--text);
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  box-shadow: 0 8px 22px color-mix(in srgb, #000000 28%, transparent);
+  cursor: default;
+  --app-icon-size: 14px;
+}
+.copy-hint.ok { color: var(--neon); }
+.copy-hint.pending {
+  cursor: pointer;
+  color: var(--neon);
+  border-color: color-mix(in srgb, var(--neon) 50%, transparent);
+}
+.copy-hint.pending:hover { background: var(--panel2); }
 .img-upload-progress {
   position: absolute;
   left: 10px;

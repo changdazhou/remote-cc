@@ -163,6 +163,7 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 - **Terminal width**: columns are re-measured when the WebGL renderer falls back, so the right edge is no longer occasionally cut off on mobile
 - **TUI detach**: `Ctrl+]` in `rcc-tui` returns to the menu again instead of dropping to the shell
 - **Session naming**: sessions without a name are named after the expanded working directory — `~` uses the home directory name, the root directory is `/`
+- **Agent copy**: agents can write to the clipboard via OSC 52, including on plain HTTP pages; if the browser blocks it, click the prompt to copy. On Mac, Option+drag forces native selection
 
 ### 2026-09-24
 
