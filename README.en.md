@@ -157,13 +157,16 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 ## Changelog
 
+### 2026-10-15
+
+- **Agent copy**: agents can write to the clipboard via OSC 52, including on plain HTTP pages; if the browser blocks it, click the prompt to copy. On Mac, Option+drag forces native selection
+
 ### 2026-10-10
 
 - **Scrolling**: scrolling up while an agent keeps printing no longer snaps back to the bottom or flickers; desktop now also holds new output while you scroll back and writes it once you return to the bottom
 - **Terminal width**: columns are re-measured when the WebGL renderer falls back, so the right edge is no longer occasionally cut off on mobile
 - **TUI detach**: `Ctrl+]` in `rcc-tui` returns to the menu again instead of dropping to the shell
 - **Session naming**: sessions without a name are named after the expanded working directory — `~` uses the home directory name, the root directory is `/`
-- **Agent copy**: agents can write to the clipboard via OSC 52, including on plain HTTP pages; if the browser blocks it, click the prompt to copy. On Mac, Option+drag forces native selection
 
 ### 2026-09-24
 
@@ -174,6 +177,9 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 - **Uploads**: live progress, speed and ETA, cancellable; 10 GB per-file limit
 - **Agent commands**: status shows the full executable path; preferred commands and `CODEX_HOME` can be set in `~/.rcc/agent.env`
 
+<details>
+<summary>Older changelog</summary>
+
 ### 2026-09-23
 
 - **Large transfers**: uploads and downloads are streamed, so large files no longer hang; non-ASCII filename downloads fixed
@@ -182,9 +188,6 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 - **Sessions**: multiple sessions in the same directory; start failures are shown in the terminal
 - **Stability**: input is no longer lost during WebSocket reconnect, and the HTTP fallback retries WebSocket automatically
 - **Fixes**: session rename, history list refresh, file preview, mobile copy mode and Enter-to-send, and more
-
-<details>
-<summary>Older changelog</summary>
 
 ### 2026-07-01
 
