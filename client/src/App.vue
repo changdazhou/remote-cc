@@ -127,7 +127,7 @@
 
         <!-- ── New conversation ──────────────────────────────────────── -->
         <div v-show="view === 'new-session'" class="new-view">
-          <NewConversation @start="startSession" @cancel="view = 'home'" />
+          <NewConversation :active="view === 'new-session'" @start="startSession" @cancel="view = 'home'" />
         </div>
 
         <!-- ── Log viewer ────────────────────────────────────────────── -->

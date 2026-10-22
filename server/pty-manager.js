@@ -12,6 +12,15 @@ const SCROLLBACK_LIMIT = 500 * 1024; // 500KB
 const HTTP_POLL_DEFAULT_WAIT = 5000;
 const HTTP_POLL_MAX_WAIT = 8000;
 const MAX_HTTP_INPUT_BYTES = 64 * 1024;
+const REPLAY_SCROLLBACK_LINES = Math.max(100, parseInt(process.env.RCC_REPLAY_SCROLLBACK, 10) || 3000);
+
+// 屏幕镜像依赖可选：未安装时回退到原始输出回放
+let HeadlessTerminal = null;
+let SerializeAddon = null;
+try {
+  ({ Terminal: HeadlessTerminal } = require('@xterm/headless'));
+  ({ SerializeAddon } = require('@xterm/addon-serialize'));
+} catch (_) {}
 
 const RCC_DIR    = path.join(os.homedir(), '.rcc');
 const LOG_DIR    = path.join(RCC_DIR, 'logs');
@@ -141,8 +150,65 @@ function readBufferSince(holder, cursor) {
     reset = true;
   }
   if (requested > end) requested = end;
-  const output = (holder.buffer || '').slice(requested - base);
+  // 从头回放且原始缓冲已被裁剪时，改用服务端屏幕镜像的序列化结果
+  const output = requested === base && base > 0
+    ? replayOutput(holder)
+    : (holder.buffer || '').slice(requested - base);
   return { output, cursor: end, reset };
+}
+
+// ── Screen mirror ─────────────────────────────────────────────────────────────
+// 原始输出只保留最后 500KB，Codex 这类 TUI 大量重绘帧 + 滚动区插入历史，
+// 裁剪后的尾部缺少前面的屏幕状态，回放出来几乎是白屏。服务端用 headless xterm
+// 持续解析全部输出，回放时发送序列化后的屏幕 + scrollback。
+
+function createScreenMirror(holder, ptyProcess, cols, rows) {
+  if (!HeadlessTerminal || !SerializeAddon) return;
+  try {
+    const term = new HeadlessTerminal({ cols, rows, scrollback: REPLAY_SCROLLBACK_LINES, allowProposedApi: true });
+    const serializer = new SerializeAddon();
+    term.loadAddon(serializer);
+    holder.mirror = { term, serializer, cursor: bufferCursor(holder) };
+    // PTY 尺寸在多处被修改（WS/HTTP/unix 输入与 resize），统一在这里同步镜像
+    const resize = ptyProcess.resize.bind(ptyProcess);
+    ptyProcess.resize = (c, r) => {
+      resize(c, r);
+      try { term.resize(c, r); } catch (_) {}
+    };
+  } catch (err) {
+    console.error('Screen mirror disabled:', err.message);
+    holder.mirror = null;
+  }
+}
+
+function feedScreenMirror(holder, data) {
+  const mirror = holder.mirror;
+  if (!mirror) return;
+  try {
+    mirror.term.write(data, () => { mirror.cursor += data.length; });
+  } catch (_) {
+    disposeScreenMirror(holder);
+  }
+}
+
+function disposeScreenMirror(holder) {
+  const mirror = holder.mirror;
+  holder.mirror = null;
+  try { if (mirror) mirror.term.dispose(); } catch (_) {}
+}
+
+function replayOutput(holder) {
+  const raw = holder.buffer || '';
+  const mirror = holder.mirror;
+  if (!mirror || !(holder.bufferBase > 0)) return raw;
+  try {
+    // 镜像异步解析，尚未解析的尾部用原始输出补上
+    const pending = mirror.cursor >= holder.bufferBase ? raw.slice(mirror.cursor - holder.bufferBase) : null;
+    if (pending === null) return raw;
+    return mirror.serializer.serialize() + pending;
+  } catch (_) {
+    return raw;
+  }
 }
 
 function normalizePollWait(wait) {
@@ -232,7 +298,7 @@ function startSocketServer(sessionId) {
 
   const server = net.createServer(socket => {
     // Send scrollback on connect
-    if (session.buffer) socket.write(session.buffer);
+    if (session.buffer) socket.write(replayOutput(session));
 
     const client = unixClient(socket);
     session.clients.add(client);
@@ -404,6 +470,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, ext
     exitCode: null,
     createdAt: Date.now(), lastActiveAt: Date.now(),
   };
+  createScreenMirror(session, ptyProcess, cols, rows);
   sessions.set(sessionId, session);
   wsToSession.set(wsId, { sessionId, client });
 
@@ -417,6 +484,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, ext
   ptyProcess.onData(data => {
     session.buffer += data;
     trimBuffer(session);
+    feedScreenMirror(session, data);
     // 通过 session.logStream 访问，避免闭包捕获旧 stream（rotate 后会更新）
     try { if (session.logStream && !session.logStream.destroyed) session.logStream.write(data); } catch (_) {}
     rotateLogIfNeeded(sessionId, Buffer.byteLength(data));
@@ -428,6 +496,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, ext
   ptyProcess.onExit(({ exitCode }) => {
     session.exitCode   = exitCode;
     session.ptyProcess = null;
+    // 退出后不再有新输出，保留镜像供 5s 内的回放，清理时再释放
     session.lastActiveAt = Date.now();
     try { if (session.logStream) session.logStream.end(); } catch (_) {}
     // 主动关闭所有已连接的 unix socket 客户端
@@ -444,6 +513,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, ext
     setTimeout(() => {
       if (sessions.get(sessionId) !== session) return;
       sessions.delete(sessionId);
+      disposeScreenMirror(session);
       logCheckCounters.delete(sessionId);
       saveMeta();
       broadcastSessionList();
@@ -475,7 +545,7 @@ function attachSession(ws, wsId, sessionId) {
   // Replay scrollback
   if (session.buffer) {
     client.sendJSON({ type: 'replay_start' });
-    client.send(session.buffer);
+    client.send(replayOutput(session));
     client.sendJSON({ type: 'replay_end' });
   }
   client.sendJSON({
@@ -573,6 +643,7 @@ function destroyShell(shellId = '1') {
   const shell = getShell(id);
   if (!shell) return;
   shellSessions.delete(id);
+  disposeScreenMirror(shell);
   for (const [wsId, binding] of wsToShellClient.entries()) {
     if (binding.shellId === id) wsToShellClient.delete(wsId);
   }
@@ -623,12 +694,16 @@ function spawnSharedShell(ws, { shellId = '1', cwd, cols = 80, rows = 24, env: c
     createdAt: Date.now(),
     lastActiveAt: Date.now(),
   };
+  createScreenMirror(shell, ptyProcess, cols, rows);
+  const previous = getShell(id);
+  if (previous) disposeScreenMirror(previous);
   shellSessions.set(id, shell);
 
   ptyProcess.onData(data => {
     if (getShell(id) !== shell) return;
     shell.buffer += data;
     trimShellBuffer(shell);
+    feedScreenMirror(shell, data);
     shell.lastActiveAt = Date.now();
     notifyHttpWaiters(shell);
     for (const client of shell.clients) client.send(data);
@@ -662,7 +737,7 @@ function attachShell(ws, wsId, { shellId = '1', cwd, cols = 80, rows = 24, env =
 
   if (shell.buffer) {
     client.sendJSON({ type: 'shell_replay_start' });
-    client.send(shell.buffer);
+    client.send(replayOutput(shell));
     client.sendJSON({ type: 'shell_replay_end' });
   }
   client.sendJSON({
@@ -954,6 +1029,7 @@ function deleteSessionHttp(sessionId) {
   }
   notifyHttpWaiters(session);
   sessions.delete(sessionId);
+  disposeScreenMirror(session);
   logCheckCounters.delete(sessionId);
   saveMeta();
   broadcastSessionList();

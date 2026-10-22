@@ -248,7 +248,9 @@ function buildCodexSessions() {
     byId.set(id, current);
   }
 
+  // 子 Agent（thread_spawn）线程是主会话派生的子任务，不过滤会挤占主会话在列表里的位置
   const sessions = Array.from(byId.values())
+    .filter(session => !session.subagent)
     .map(session => normalizeCodexSession(session))
     .sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
   codexSessionsCache = {
@@ -348,6 +350,7 @@ function applyCodexSessionLine(session, line) {
   if (obj.type === 'session_meta' && obj.payload) {
     if (!session.sessionId && obj.payload.id) session.sessionId = obj.payload.id;
     if (!session.cwd && obj.payload.cwd) session.cwd = obj.payload.cwd;
+    if (obj.payload.source && typeof obj.payload.source === 'object' && obj.payload.source.subagent) session.subagent = true;
     updateSessionLastModified(session, obj.payload.timestamp);
   }
 
@@ -368,6 +371,7 @@ function applyCodexSessionLineFallback(session, line) {
   if (line.includes('"session_meta"')) {
     if (!session.sessionId) session.sessionId = extractJsonStringField(line, 'id') || session.sessionId;
     if (!session.cwd) session.cwd = extractJsonStringField(line, 'cwd') || session.cwd;
+    if (/"source"\s*:\s*\{\s*"subagent"/.test(line)) session.subagent = true;
     updateSessionLastModified(session, extractJsonStringField(line, 'timestamp'));
     return;
   }

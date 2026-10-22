@@ -225,7 +225,7 @@ GET  /api/shell/poll?cursor=0&wait=20000
 | 原始字符串 | PTY 输出，直接写入 xterm.js |
 | `session_id` | 会话创建/接入确认，含 `sessionId`、`name` |
 | `session_list` | 会话列表更新（任何变更时广播） |
-| `replay_start` / `replay_end` | Scrollback 回放边界 |
+| `replay_start` / `replay_end` | Scrollback 回放边界（原始输出超过 500KB 后，回放内容为服务端屏幕镜像序列化的屏幕 + 最多 3000 行 scrollback） |
 | `exit` | PTY 进程退出，含 `exitCode` |
 | `error` | 错误信息 |
 | `shell_replay_start` / `shell_replay_end` | 共享终端 scrollback 回放边界 |
@@ -470,7 +470,7 @@ On connect, the server immediately sends: `{"type":"session_list","sessions":[..
 | Raw string | PTY output, written directly to xterm.js |
 | `session_id` | Session created/attached, includes `sessionId`, `name` |
 | `session_list` | Session list update (broadcast on any change) |
-| `replay_start` / `replay_end` | Scrollback replay boundaries |
+| `replay_start` / `replay_end` | Scrollback replay boundaries (once raw output exceeds 500KB, the replay is the serialized server-side screen mirror plus up to 3000 scrollback lines) |
 | `exit` | PTY process exited, includes `exitCode` |
 | `error` | Error message |
 | `shell_replay_start` / `shell_replay_end` | Shared terminal scrollback replay boundaries |

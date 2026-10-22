@@ -396,6 +396,14 @@ let autoScrollUntil = 0;         // 程序写入触发的滚动不应暂停锁�
 const pendingWrites = [];        // 用户上划时缓存的输出
 let pendingBytes = 0;
 const PENDING_MAX_BYTES = 4 * 1024 * 1024;
+// 鼠标选中文字期间暂停写入：Codex 持续重绘底部并用滚动区插入历史，
+// 写入会把选区下的内容挪走或改写，复制出来是碎片甚至选区被清掉
+// 复制完成、开始滚动、切走会话时立即恢复，否则输出被冻住，滚动时又成批冲刷，画面闪烁
+let selectionHold = false;
+let selectionDragging = false;
+const SELECTION_HOLD_MAX_MS = 60000;   // 拖动中的上限
+const SELECTION_IDLE_MS = 10000;       // 松手后留给复制的时间
+let selectionHoldTimer = null;
 let boundViewport = null;
 let boundScrollRoot = null;
 const TERMINAL_SELECTION_BG = 'rgba(37, 99, 235, 0.82)';
@@ -421,6 +429,42 @@ function setUserScrolled(value) {
     hasNewOutput.value = false;
     clearTimeout(scrollIdleTimer);
   }
+}
+
+function setSelectionHold(value) {
+  if (selectionHold === value) return;
+  selectionHold = value;
+  clearTimeout(selectionHoldTimer);
+  if (value) {
+    // 防止忘记取消选区导致输出长时间不更新
+    selectionHoldTimer = setTimeout(() => releaseSelectionHold(), SELECTION_HOLD_MAX_MS);
+  }
+}
+
+function releaseSelectionHold() {
+  if (!selectionHold) return;
+  setSelectionHold(false);
+  if (!userScrolled && !mobileCopyMode.value) flushPending();
+}
+
+function onDocumentMouseUp() {
+  selectionDragging = false;
+  document.removeEventListener('mouseup', onDocumentMouseUp, true);
+  if (!selectionHold) return;
+  // xterm 在 mouseup 后才最终确定选区，下一帧再判断
+  requestAnimationFrame(() => {
+    if (!selectionHold) return;
+    if (!term?.hasSelection?.()) { releaseSelectionHold(); return; }
+    clearTimeout(selectionHoldTimer);
+    selectionHoldTimer = setTimeout(() => releaseSelectionHold(), SELECTION_IDLE_MS);
+  });
+}
+
+// 复制选区后不再需要冻结输出
+function copySelectionText(text) {
+  const result = copyText(text);
+  releaseSelectionHold();
+  return result;
 }
 
 function scheduleIdleResume() {
@@ -490,7 +534,12 @@ function markUserScrollIntent() {
 // 往上看历史：立即暂停跟随，不等滚动事件，避免刚离开底部就被新输出拉回去
 function beginScrollBack() {
   markUserScrollIntent();
-  if (!canScrollBack()) return;
+  // 滚动由 userScrolled 接管缓存；保留选区暂停会让回到底部后的输出时冻时放
+  if (!canScrollBack()) {
+    if (!selectionDragging) releaseSelectionHold();
+    return;
+  }
+  if (!selectionDragging) setSelectionHold(false);
   setUserScrolled(true);
   clearTimeout(autoScrollTimer);
   // 不足一行的上划会被 xterm 取整回底部，新输出到来时又被带着走；等 xterm 处理完这次滚动，仍在底部就主动上移一行
@@ -504,7 +553,10 @@ function beginScrollBack() {
 
 function onRootWheel(e) {
   if (e.deltaY < 0) beginScrollBack();
-  else markUserScrollIntent();
+  else {
+    markUserScrollIntent();
+    if (!selectionDragging) releaseSelectionHold();
+  }
 }
 
 // 输出期间 xterm 每帧都会改 scrollTop 并忽略随后的一次滚动事件，用户同一帧的滚轮滚动会并进这次事件被吞掉，
@@ -614,7 +666,15 @@ function disableWebgl() {
 // 拖动滚动条或在终端里按下鼠标（选中文字）都算操作
 function onRootMouseDown(e) {
   if (e.target === boundViewport) markUserScrollIntent();
-  else if (userScrolled) scheduleIdleResume();
+  else {
+    if (userScrolled) scheduleIdleResume();
+    // 左键在屏幕区按下可能开始拖选；程序开启鼠标上报时按键交给程序，不暂停
+    if (e.button === 0 && (term?.modes?.mouseTrackingMode || 'none') === 'none') {
+      setSelectionHold(true);
+      selectionDragging = true;
+      document.addEventListener('mouseup', onDocumentMouseUp, true);
+    }
+  }
 }
 
 function bindViewport(vp) {
@@ -739,11 +799,12 @@ function smartWrite(data, options = {}) {
   if (userScrolled || mobileCopyMode.value) hasNewOutput.value = true;
   // 上划期间边写边看会和用户抢滚动位置：xterm 每次写入都重设 scrollTop 并吞掉下一次滚动事件，
   // 回滚缓冲写满后每行都会挪动视图，用户的滚轮被吞、画面闪烁。所以桌面和手机都先缓存
-  if (mobileCopyMode.value || userScrolled) {
+  if (mobileCopyMode.value || userScrolled || selectionHold) {
     pendingWrites.push(item);
     pendingBytes += output.length;
     // 缓存过多时不能丢弃中间片段（会打乱终端控制序列），直接恢复跟随并全部写入
     if (pendingBytes > PENDING_MAX_BYTES && !mobileCopyMode.value) {
+      setSelectionHold(false);
       setUserScrolled(false);
       flushPending();
     }
@@ -755,6 +816,7 @@ function smartWrite(data, options = {}) {
 
 function resumeOutputForInput() {
   if (mobileCopyMode.value) return;
+  setSelectionHold(false);
   setUserScrolled(false);
   if (pendingWrites.length > 0) flushPending();
   else scrollToBottomSoon();
@@ -974,6 +1036,10 @@ onMounted(() => {
   configureInputMode(termRef.value?.querySelector('.xterm-helper-textarea'));
   selectionDisposable = term.onSelectionChange(() => {
     terminalSelection.value = term.getSelection();
+    // 选区被取消（单击别处、复制后清除）时恢复输出；拖动中的变化不处理
+    if (selectionHold && !selectionDragging && !term.hasSelection()) {
+      requestAnimationFrame(() => { if (!term?.hasSelection?.()) releaseSelectionHold(); });
+    }
   });
 
   if (wrapRef.value) wrapRef.value.style.background = td.bg;
@@ -1024,14 +1090,14 @@ onMounted(() => {
     if (e.type === 'keydown' && (e.ctrlKey || e.metaKey) && !e.shiftKey && e.code === 'KeyC') {
       const sel = term.getSelection();
       if (sel) {
-        copyText(sel);
+        copySelectionText(sel);
         return false;
       }
       return true;
     }
     if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && e.code === 'KeyC') {
       const sel = term.getSelection();
-      if (sel) copyText(sel);
+      if (sel) copySelectionText(sel);
       return false;
     }
     if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && e.code === 'KeyV') {
@@ -1079,6 +1145,10 @@ onMounted(() => {
       if (!width || !height) {
         clearTimeout(resizeTimer);
         disableWebgl();
+        // 切到别的会话：选区暂停不能带到后台，否则切回来输出仍是冻住的
+        selectionDragging = false;
+        document.removeEventListener('mouseup', onDocumentMouseUp, true);
+        releaseSelectionHold();
       } else {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(() => {
@@ -1131,6 +1201,8 @@ onBeforeUnmount(() => {
   clearNativePasteFallback();
   clearTimeout(autoScrollTimer);
   clearTimeout(scrollIdleTimer);
+  clearTimeout(selectionHoldTimer);
+  document.removeEventListener('mouseup', onDocumentMouseUp, true);
   stopInertia();
   disableWebgl();
   selectionDisposable?.dispose();
@@ -1179,6 +1251,7 @@ function jumpToBottom() {
   if (!isMobileViewport()) focusTerm();
 }
 function clear() {
+  setSelectionHold(false);
   pendingWrites.splice(0);
   pendingBytes = 0;
   resetOptimisticEcho();
@@ -1459,7 +1532,7 @@ function getSelectedMobileCopyText(el) {
 
 function copyTerminalSelection() {
   const sel = term?.getSelection() || terminalSelection.value;
-  copyText(sel);
+  copySelectionText(sel);
   terminalSelection.value = '';
 }
 
@@ -1597,7 +1670,7 @@ function openContextMenuAt(x, y) {
 function ctxCopy() {
   ctxMenu.show = false;
   const sel = term?.getSelection();
-  copyText(sel);
+  copySelectionText(sel);
 }
 function ctxPasteClick() {
   ctxMenu.show = false;

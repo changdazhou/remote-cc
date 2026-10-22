@@ -173,6 +173,7 @@ import DirectoryPicker from './DirectoryPicker.vue';
 import AppIcon from './AppIcon.vue';
 
 const { t } = useI18n();
+const props = defineProps({ active: { type: Boolean, default: true } });
 const emit = defineEmits(['start', 'cancel']);
 const agent = ref('claude');
 const agentStatuses = ref([]);
@@ -334,6 +335,13 @@ function openResume() {
   tab.value = 'resume';
   loadHistory();
 }
+
+// 页面用 v-show 常驻，历史只在首次打开时加载；每次重新进入都要重新拉取，否则之后新建的会话不会出现
+watch(() => props.active, active => {
+  if (!active) return;
+  if (tab.value === 'resume') loadHistory(true);
+  else resetHistoryState();
+});
 
 async function toggleProj(id) {
   if (expanded.has(id)) { expanded.delete(id); return; }

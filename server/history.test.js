@@ -122,6 +122,34 @@ test('codex metadata is extracted from a bounded prefix of huge session files', 
   assert.equal(sessions[0].cwd, cwd);
 });
 
+test('codex subagent threads are hidden from history', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rcc-history-'));
+  const parentId = '019f6ffc-a6f0-7560-b2c2-e8781cb15557';
+  const childId = '019f6ffc-a6f0-7560-b2c2-e8781cb15558';
+  const hugeChildId = '019f6ffc-a6f0-7560-b2c2-e8781cb15559';
+  const cwd = '/workspace/with-subagents';
+  const dir = path.join(home, '.codex', 'sessions', '2026', '07', '17');
+  const source = { subagent: { thread_spawn: { parent_thread_id: parentId, depth: 1 } } };
+
+  writeJsonl(path.join(dir, `rollout-2026-07-17T20-10-56-${parentId}.jsonl`), [
+    { type: 'session_meta', timestamp: '2026-07-17T12:10:56.634Z', payload: { id: parentId, cwd, source: 'cli' } },
+  ]);
+  writeJsonl(path.join(dir, `rollout-2026-07-17T20-11-56-${childId}.jsonl`), [
+    { type: 'session_meta', timestamp: '2026-07-17T12:11:56.634Z', payload: { id: childId, cwd, source } },
+  ]);
+  // session_meta 超过读取前缀时走字符串回退解析
+  fs.writeFileSync(
+    path.join(dir, `rollout-2026-07-17T20-12-56-${hugeChildId}.jsonl`),
+    `{"timestamp":"2026-07-17T12:12:56.634Z","type":"session_meta","payload":{"id":"${hugeChildId}","cwd":"${cwd}","source":${JSON.stringify(source)},"padding":"${'x'.repeat(128 * 1024)}"}}\n`
+  );
+
+  const history = loadHistoryWithHome(home);
+  const sessions = history.getSessions('codex', 'codex');
+
+  assert.deepEqual(sessions.map(s => s.sessionId), [parentId]);
+  assert.equal(history.getProjects('codex')[0].sessionCount, 1);
+});
+
 test('grok history is grouped by the recorded working directory', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rcc-history-'));
   const cwd = '/workspace/grok-project';

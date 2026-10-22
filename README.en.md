@@ -157,6 +157,12 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 ## Changelog
 
+### 2026-10-22
+
+- **No blank screen on refresh**: the server keeps a mirror of the terminal screen; once raw output exceeds 500KB, refreshing or opening on another device replays the current screen plus the last 3000 lines, so long Codex redraws no longer leave a blank screen (applies to sessions created after a service restart)
+- **Codex copy**: output is paused while text is selected, so Codex redraws no longer move or clear the selection; output resumes right after copying, scrolling or switching sessions
+- **Session history**: history is reloaded each time the new-session page opens, so sessions started through wrapper commands are no longer missed; Codex subagent threads are hidden from the list
+
 ### 2026-10-15
 
 - **Agent copy**: agents can write to the clipboard via OSC 52, including on plain HTTP pages; if the browser blocks it, click the prompt to copy. On Mac, Option+drag forces native selection
@@ -168,6 +174,9 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 - **TUI detach**: `Ctrl+]` in `rcc-tui` returns to the menu again instead of dropping to the shell
 - **Session naming**: sessions without a name are named after the expanded working directory — `~` uses the home directory name, the root directory is `/`
 
+<details>
+<summary>Older changelog</summary>
+
 ### 2026-09-24
 
 - **Terminal rendering**: WebGL renderer with selections aligned to text; font or size changes re-measure and resync columns, so the right edge is no longer cut off on desktop
@@ -176,9 +185,6 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 - **Colors**: agent color queries are answered so colors follow the theme; when the service is started from inside an agent session, new sessions no longer inherit its color-disabling settings
 - **Uploads**: live progress, speed and ETA, cancellable; 10 GB per-file limit
 - **Agent commands**: status shows the full executable path; preferred commands and `CODEX_HOME` can be set in `~/.rcc/agent.env`
-
-<details>
-<summary>Older changelog</summary>
 
 ### 2026-09-23
 
