@@ -157,6 +157,10 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 ## Changelog
 
+### 2026-10-27
+
+- **Session history**: Codex data directories under the home directory are detected automatically, so history shows up even when a wrapper command sets its own `CODEX_HOME` and `~/.rcc/agent.env` doesn't configure it; same for the web UI and `rcc-tui`
+
 ### 2026-10-22
 
 - **No blank screen on refresh**: the server keeps a mirror of the terminal screen; once raw output exceeds 500KB, refreshing or opening on another device replays the current screen plus the last 3000 lines, so long Codex redraws no longer leave a blank screen (applies to sessions created after a service restart)
@@ -167,15 +171,15 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 
 - **Agent copy**: agents can write to the clipboard via OSC 52, including on plain HTTP pages; if the browser blocks it, click the prompt to copy. On Mac, Option+drag forces native selection
 
+<details>
+<summary>Older changelog</summary>
+
 ### 2026-10-10
 
 - **Scrolling**: scrolling up while an agent keeps printing no longer snaps back to the bottom or flickers; desktop now also holds new output while you scroll back and writes it once you return to the bottom
 - **Terminal width**: columns are re-measured when the WebGL renderer falls back, so the right edge is no longer occasionally cut off on mobile
 - **TUI detach**: `Ctrl+]` in `rcc-tui` returns to the menu again instead of dropping to the shell
 - **Session naming**: sessions without a name are named after the expanded working directory — `~` uses the home directory name, the root directory is `/`
-
-<details>
-<summary>Older changelog</summary>
 
 ### 2026-09-24
 

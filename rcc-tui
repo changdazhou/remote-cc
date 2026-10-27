@@ -33,12 +33,8 @@ const ENV_FILE    = path.join(APP_DIR, '.env');
 const SOCK_DIR    = path.join(RCC_DIR, 'sockets');
 const LOCAL_TOKEN = path.join(RCC_DIR, 'local.token');
 const CLAUDE_DIR  = path.join(HOME, '.claude', 'projects');
-const CODEX_HOME_DIRS = uniquePaths([
-  process.env.RCC_CODEX_HOME,
-  process.env.CODEX_HOME,
-  require(path.join(APP_DIR, 'server', 'local-env.js')).readLocalAgentEnv().CODEX_HOME,
-  path.join(HOME, '.codex'),
-].filter(Boolean).map(expandHome));
+// 与 Web 端共用目录探测：显式配置的 CODEX_HOME 加上主目录下自动发现的 Codex 数据目录（封装命令自带的）
+const codexHomeDirs = () => require(path.join(SERVER_DIR, 'history.js')).codexHomeDirs();
 const CODEX_HISTORY_CACHE_TTL_MS = positiveInt(process.env.RCC_HISTORY_CACHE_TTL_MS, 15000);
 const CODEX_SESSION_META_BYTES = positiveInt(process.env.RCC_CODEX_SESSION_META_BYTES, 64 * 1024);
 const CODEX_SESSION_META_LINES = 20;
@@ -58,29 +54,13 @@ function compactHome(input) {
   return input;
 }
 
-function uniquePaths(paths) {
-  const seen = new Set();
-  const result = [];
-  for (const p of paths) {
-    const key = canonicalPathKey(p);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(p);
-  }
-  return result;
-}
-
-function canonicalPathKey(p) {
-  try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); }
-}
-
 function positiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function codexHistoryLabel() {
-  return CODEX_HOME_DIRS.map(dir => compactHome(path.join(dir, 'sessions'))).join(', ');
+  return codexHomeDirs().map(dir => compactHome(path.join(dir, 'sessions'))).join(', ');
 }
 
 const AGENTS = {
@@ -287,7 +267,7 @@ function loadCodexHistoryEntries() {
 }
 
 function listCodexHistoryFiles() {
-  return CODEX_HOME_DIRS
+  return codexHomeDirs()
     .map(dir => path.join(dir, 'history.jsonl'))
     .filter(filePath => fs.existsSync(filePath));
 }
@@ -305,7 +285,7 @@ function loadCodexSessionsFromFiles() {
 
 function listCodexSessionFiles() {
   const files = [];
-  const stack = CODEX_HOME_DIRS
+  const stack = codexHomeDirs()
     .map(dir => path.join(dir, 'sessions'))
     .filter(dir => fs.existsSync(dir));
   while (stack.length) {

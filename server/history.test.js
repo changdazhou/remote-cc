@@ -195,3 +195,26 @@ test('grok history is grouped by the recorded working directory', () => {
   assert.equal(sessions[1].cwd, cwd);
   assert.equal(sessions[1].lastModified, new Date(1758362400 * 1000).toISOString());
 });
+
+test('codex homes set by wrapper commands are discovered without configuration', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rcc-history-'));
+  const sessionId = '019f6ffc-a6f0-7560-b2c2-e8781cb15560';
+  const cwd = '/workspace/wrapper-home';
+  const wrapperHome = path.join(home, '.wrapper-cx');
+
+  // 封装命令自带 CODEX_HOME：服务进程环境和 agent.env 里都没有
+  writeJsonl(path.join(wrapperHome, 'sessions', '2026', '10', '27', `rollout-2026-10-27T03-00-00-${sessionId}.jsonl`), [
+    { type: 'session_meta', timestamp: '2026-10-27T03:00:00.000Z', payload: { id: sessionId, cwd, source: 'cli' } },
+  ]);
+  fs.writeFileSync(path.join(wrapperHome, 'state_5.sqlite'), '');
+  // 只有 sessions/ 没有 Codex 标记文件的目录不算
+  writeJsonl(path.join(home, '.other-tool', 'sessions', `rollout-2026-10-27T03-00-00-${sessionId.replace(/0$/, '1')}.jsonl`), [
+    { type: 'session_meta', timestamp: '2026-10-27T03:00:00.000Z', payload: { id: sessionId.replace(/0$/, '1'), cwd } },
+  ]);
+
+  const history = loadHistoryWithHome(home);
+  const sessions = history.getSessions('codex', 'codex');
+
+  assert.deepEqual(sessions.map(s => s.sessionId), [sessionId]);
+  assert.equal(sessions[0].cwd, cwd);
+});

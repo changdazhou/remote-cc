@@ -6,12 +6,12 @@ const { normalizeAgent } = require('./agent-config');
 const { readLocalAgentEnv } = require('./local-env');
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
-const CODEX_HOME_DIRS = uniquePaths([
+const CONFIGURED_CODEX_HOME_DIRS = [
   process.env.RCC_CODEX_HOME,
   process.env.CODEX_HOME,
   readLocalAgentEnv().CODEX_HOME,
   path.join(os.homedir(), '.codex'),
-].filter(Boolean).map(expandHome));
+].filter(Boolean).map(expandHome);
 const GROK_HOME_DIRS = uniquePaths([
   process.env.GROK_HOME,
   path.join(os.homedir(), '.grok'),
@@ -28,6 +28,37 @@ function expandHome(input) {
   if (!input || input === '~') return os.homedir();
   if (input.startsWith('~/') || input.startsWith('~\\')) return path.join(os.homedir(), input.slice(2));
   return input;
+}
+
+// Codex 封装命令通常在启动时自行设置 CODEX_HOME（如 ~/.<name>），服务进程的环境里看不到。
+// 除了显式配置的目录，再扫描主目录下的隐藏目录，按 Codex 的布局识别（sessions/<年>/ 加 history.jsonl 或 state_*.sqlite）
+const HOME_DIR = os.homedir();
+
+function codexHomeDirs() {
+  const discovered = [];
+  let entries = [];
+  try { entries = fs.readdirSync(HOME_DIR, { withFileTypes: true }); } catch (_) {}
+  const grokKeys = new Set(GROK_HOME_DIRS.map(canonicalPathKey));
+  for (const entry of entries) {
+    if (!entry.name.startsWith('.') || !(entry.isDirectory() || entry.isSymbolicLink())) continue;
+    const dir = path.join(HOME_DIR, entry.name);
+    if (grokKeys.has(canonicalPathKey(dir)) || !isCodexHome(dir)) continue;
+    discovered.push(dir);
+  }
+  return uniquePaths([...CONFIGURED_CODEX_HOME_DIRS, ...discovered.sort()]);
+}
+
+// Claude Code 的 ~/.claude 也有 sessions/ 和 history.jsonl，靠 sessions/ 下按年份分的子目录区分
+function isCodexHome(dir) {
+  try {
+    const hasYearDir = fs.readdirSync(path.join(dir, 'sessions'), { withFileTypes: true })
+      .some(entry => entry.isDirectory() && /^\d{4}$/.test(entry.name));
+    if (!hasYearDir) return false;
+    if (fs.existsSync(path.join(dir, 'history.jsonl'))) return true;
+    return fs.readdirSync(dir).some(name => /^state_\d+\.sqlite$/.test(name));
+  } catch (_) {
+    return false;
+  }
 }
 
 function uniquePaths(paths) {
@@ -189,7 +220,7 @@ function getCodexHistoryEntries() {
 }
 
 function listCodexHistoryFiles() {
-  return CODEX_HOME_DIRS
+  return codexHomeDirs()
     .map(dir => path.join(dir, 'history.jsonl'))
     .filter(filePath => fs.existsSync(filePath));
 }
@@ -274,7 +305,7 @@ function getCodexSessionsFromFiles() {
 
 function listCodexSessionFiles() {
   const files = [];
-  const stack = CODEX_HOME_DIRS
+  const stack = codexHomeDirs()
     .map(dir => path.join(dir, 'sessions'))
     .filter(dir => fs.existsSync(dir));
   while (stack.length) {
@@ -551,4 +582,4 @@ function grokProjectId(cwd) {
   return `grok-${hash}`;
 }
 
-module.exports = { getProjects, getSessions, readSession };
+module.exports = { getProjects, getSessions, readSession, codexHomeDirs };
