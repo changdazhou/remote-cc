@@ -1,7 +1,7 @@
 /**
  * app.js — 可热重启的 REST API 服务
  *
- * 通过 Unix socket /tmp/rcc-app.sock 接收来自 proxy.js 的 HTTP 请求。
+ * 通过 Unix socket（默认 ~/.rcc/app.sock，由 proxy.js 经 RCC_APP_SOCK 传入）接收来自 proxy.js 的 HTTP 请求。
  * 协议：length-prefixed JSON（4 字节大端 uint32 + JSON body）
  *
  * 安全模型：
@@ -21,12 +21,15 @@ const { listDir, readFilePreview, statFile, createDirectory, readDownloadFile, h
 const { getSettingsHandler, saveSettingsHandler } = require('./web-settings');
 const { getAgentStatuses } = require('./agent-config');
 
-const APP_SOCK = '/tmp/rcc-app.sock';
+// 由 proxy.js 通过 RCC_APP_SOCK 传入；旧版 proxy 不传时沿用原路径，保证只热重载 app.js 时仍能对接
+const APP_SOCK = process.env.RCC_APP_SOCK || '/tmp/rcc-app.sock';
 const RCC_DIR  = path.join(os.homedir(), '.rcc');
 
 // ── Express app ───────────────────────────────────────────────────────────────
 
 const app = express();
+// 纵深防御：路由区分大小写，/API/... 不会落到 /api 路由上（proxy 也已对 /api 前缀不区分大小写地鉴权）
+app.set('case sensitive routing', true);
 
 // Static files
 const distDir = path.join(__dirname, '..', 'client', 'dist');
@@ -126,6 +129,15 @@ app.all('/api/*', (req, res) => {
 app.get('*', (req, res) => {
   const p = path.join(distDir, 'index.html');
   fs.existsSync(p) ? res.sendFile(p) : res.status(404).send('Frontend not built.');
+});
+
+// 兜底错误处理：Express 默认会把错误堆栈（含服务器绝对路径）以 HTML 返回给客户端
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error('HTTP error:', err.message);
+  if (res.headersSent) { try { res.end(); } catch (_) {} return; }
+  res.status(status).json({ error: status >= 500 ? 'Internal server error' : (err.expose && err.message) || 'Bad request' });
 });
 
 // ── Unix socket IPC 服务器 ────────────────────────────────────────────────────

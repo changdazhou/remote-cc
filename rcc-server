@@ -65,6 +65,13 @@ is_pid_alive() {
   [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
 }
 
+# pid 文件 / lock 文件在重启或 SIGKILL 后会残留，PID 可能已被无关进程复用，kill 前确认是本服务的进程
+is_rcc_pid() {
+  is_pid_alive "${1:-}" || return 1
+  ps -p "$1" -o args= 2>/dev/null | grep -qF \
+    -e "rcc-server _watchdog" -e "$SERVER_DIR/proxy.js" -e "$SERVER_DIR/index.js"
+}
+
 lock_pid() {
   [ -f "$LOCK_FILE" ] || return 0
   node -e "try{process.stdout.write(String(JSON.parse(require('fs').readFileSync('$LOCK_FILE','utf8')).pid||''))}catch(e){}" 2>/dev/null
@@ -73,14 +80,14 @@ lock_pid() {
 is_running() {
   local lp
   lp="$(lock_pid)"
-  if [ -n "$lp" ] && is_pid_alive "$lp"; then
+  if [ -n "$lp" ] && is_rcc_pid "$lp"; then
     return 0
   fi
   pgrep -f "$SERVER_DIR/proxy\.js" >/dev/null 2>&1
 }
 
 watchdog_running() {
-  [ -f "$PID_FILE" ] && is_pid_alive "$(cat "$PID_FILE" 2>/dev/null)"
+  [ -f "$PID_FILE" ] && is_rcc_pid "$(cat "$PID_FILE" 2>/dev/null)"
 }
 
 port_owner_lines() {
@@ -162,6 +169,8 @@ do_stop() {
   else
     PID="$(cat "$PID_FILE" 2>/dev/null || true)"
     LP="$(lock_pid)"
+    is_rcc_pid "$PID" || PID=""
+    is_rcc_pid "$LP" || LP=""
     echo "Stopping..."
     [ -n "$PID" ] && pkill -P "$PID" 2>/dev/null
     [ -n "$PID" ] && kill "$PID" 2>/dev/null
@@ -183,18 +192,18 @@ do_stop() {
 do_reload() {
   # 热重载：只重启 app.js，WS/PTY 不中断
   # proxy.js 的 PID 存在 lock 文件里（由 proxy.js 写入）
-  LOCK_FILE="$HOME/.rcc/server.lock"
   if [[ ! -f "$LOCK_FILE" ]]; then
     echo "Service is not running. Use: rcc-server start"
     exit 1
   fi
-  PROXY_PID="$(node -e "try{process.stdout.write(String(JSON.parse(require('fs').readFileSync('$LOCK_FILE'))?.pid||''))}catch(e){}" 2>/dev/null)"
+  PROXY_PID="$(lock_pid)"
   if [[ -z "$PROXY_PID" ]]; then
     echo "Could not read service PID. Try: rcc-server restart"
     exit 1
   fi
-  if ! kill -0 "$PROXY_PID" 2>/dev/null; then
-    echo "Service is not running. Use: rcc-server start"
+  # lock 文件残留时 PID 可能已被无关进程复用，SIGUSR2 的默认动作是终止进程，必须先核对
+  if ! is_rcc_pid "$PROXY_PID"; then
+    echo "Service is not running (stale lock). Use: rcc-server start"
     exit 1
   fi
   kill -SIGUSR2 "$PROXY_PID"
@@ -207,17 +216,21 @@ do_status() {
     PID="$(cat "$PID_FILE" 2>/dev/null || lock_pid)"
     echo "Running on port $PORT (pid $PID). Log: $LOG_FILE"
     pgrep -a node 2>/dev/null | grep -E "proxy\.js|index\.js" | head -5
+    return 0
   elif watchdog_running; then
     echo "Watchdog is running, but proxy is not active. Log: $LOG_FILE"
     if port_in_use; then
       echo "Port $PORT is occupied by:"
       port_owner_lines
     fi
+    return 1
   elif port_in_use; then
     echo "Not running. Port $PORT is occupied by:"
     port_owner_lines
+    return 1
   else
     echo "Not running."
+    return 1
   fi
 }
 
@@ -237,7 +250,11 @@ L() { if [[ "$(rcc_lang)" == en ]]; then printf '%s' "$2"; else printf '%s' "$1"
 case "$cmd" in
   start)   do_start   ;;
   stop)    do_stop    ;;
-  restart) do_stop; sleep 1; do_start ;;
+  restart)
+    # 在 RemoteCC 自己的终端里执行 restart 时，do_stop 会杀掉承载本脚本的 PTY，
+    # 随之而来的 SIGHUP 会让脚本在 do_start 之前退出，服务就停了起不来
+    trap '' HUP PIPE
+    do_stop; sleep 1; do_start ;;
   reload)  do_reload  ;;
   status)  do_status  ;;
   log)     do_log     ;;

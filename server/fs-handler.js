@@ -8,7 +8,8 @@ const { StringDecoder } = require('string_decoder');
 const DEFAULT_ROOTS = [path.parse(os.homedir()).root];
 
 function getAllowedRoots() {
-  const extra = (process.env.FS_ROOTS || '').split(':').filter(Boolean);
+  // Windows 路径自带盘符冒号（C:\x），按平台分隔符拆分（posix ':'，win32 ';'）
+  const extra = (process.env.FS_ROOTS || '').split(path.delimiter).filter(Boolean);
   return [...DEFAULT_ROOTS, ...extra].map(root => path.resolve(root));
 }
 
@@ -105,6 +106,8 @@ function sniffTextFile(safePath, size) {
  * @param {boolean} showHidden  是否显示隐藏文件
  * @returns {{ path: string, entries: Array }}
  */
+const LIST_MAX_ENTRIES = 5000;
+
 function listDir(reqPath, showHidden = false) {
   const safePath = resolveSafePath(reqPath);
   const stat = fs.statSync(safePath);
@@ -137,6 +140,10 @@ function listDir(reqPath, showHidden = false) {
     return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
   });
 
+  // 超大目录（node_modules/日志目录等）一次返回几万条会让响应和前端渲染都卡死，只保留前 N 条
+  if (entries.length > LIST_MAX_ENTRIES) {
+    return { path: safePath, entries: entries.slice(0, LIST_MAX_ENTRIES), truncated: true, total: entries.length };
+  }
   return { path: safePath, entries };
 }
 
@@ -154,6 +161,8 @@ function readFilePreview(reqPath, maxBytes = TEXT_MAX_BYTES) {
   const safePath = resolveSafePath(reqPath);
   const stat = fs.statSync(safePath);
   if (stat.isDirectory()) throw new Error('Is a directory');
+  // FIFO / 字符设备等打开或读取会一直阻塞，卡死整个 app.js 进程，只预览普通文件
+  if (!stat.isFile()) return { path: safePath, type: 'unsupported', size: stat.size };
 
   const ext  = path.extname(safePath).toLowerCase();
   const base = path.basename(safePath);
@@ -445,6 +454,7 @@ function handleFsDownloadRequest(req, res, reqPath) {
     safePath = resolveSafePath(reqPath);
     stat = fs.statSync(safePath);
     if (stat.isDirectory()) throw new Error('Is a directory');
+    if (!stat.isFile()) throw new Error('Not a regular file');
   } catch (e) {
     sendJson(res, errorStatus(e), { error: e.message });
     return;
@@ -472,6 +482,7 @@ function readDownloadFile(reqPath) {
   const safePath = resolveSafePath(reqPath);
   const stat = fs.statSync(safePath);
   if (stat.isDirectory()) throw new Error('Is a directory');
+  if (!stat.isFile()) throw new Error('Not a regular file');
   return {
     path: safePath,
     name: path.basename(safePath),

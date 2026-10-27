@@ -27,10 +27,19 @@ function loadMeta() {
   catch (_) { return []; }
 }
 
+// 精确 ID > 精确名称 > ID 前缀；前缀命中多个时报歧义而不是随便挑一个
 function findSession(idOrName) {
   const metas = loadMeta();
-  return metas.find(s => s.sessionId === idOrName || s.name === idOrName
-    || s.sessionId.startsWith(idOrName));
+  const byId = metas.find(s => s.sessionId === idOrName);
+  if (byId) return byId;
+  const byName = metas.filter(s => s.name === idOrName);
+  const candidates = byName.length ? byName : metas.filter(s => s.sessionId.startsWith(idOrName));
+  if (candidates.length > 1) {
+    console.error(L(`有多个会话匹配 "${idOrName}"，请使用更完整的 ID：`, `Multiple sessions match "${idOrName}", use a longer ID:`));
+    for (const s of candidates) console.error(`  ${s.sessionId}  ${s.name}`);
+    process.exit(1);
+  }
+  return candidates[0];
 }
 
 function getSocketPath(meta) {
@@ -139,6 +148,11 @@ function attachCmd(idOrName) {
     try { socket.unpipe(process.stdout); socket.destroy(); } catch (_) {}
     process.stdout.removeListener('resize', sendResize);
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    // 关闭 Agent 打开的终端模式（备用屏、bracketed paste、焦点/鼠标上报、应用光标键、kitty 键盘协议），
+    // 否则退出后本地 shell 会收到鼠标乱码、方向键失灵
+    if (process.stdout.isTTY) {
+      process.stdout.write('\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[<u\x1b[?1049l\x1b[?25h\x1b[0m');
+    }
   }
 
   socket.on('error', err => {
@@ -171,9 +185,14 @@ function logCmd(idOrName) {
     const ps = spawn('powershell.exe', ['-Command', `Get-Content -Path "${session.logPath}" -Wait -Tail 50`], {
       stdio: ['ignore', 'inherit', 'inherit'],
     });
+    ps.on('error', e => { console.error(`powershell: ${e.message}`); process.exit(1); });
+    ps.on('exit', code => process.exit(code || 0));
     process.on('SIGINT', () => { ps.kill(); process.exit(0); });
   } else {
     const tail = spawn('tail', ['-f', session.logPath], { stdio: ['ignore', 'inherit', 'inherit'] });
+    // 没有 error 监听时，tail 不存在（精简容器）会直接抛未捕获异常
+    tail.on('error', e => { console.error(`tail: ${e.message}`); process.exit(1); });
+    tail.on('exit', code => process.exit(code || 0));
     process.on('SIGINT', () => { tail.kill(); process.exit(0); });
   }
 }
@@ -231,13 +250,17 @@ switch (cmd) {
     // attach 和无参数直接进 rcc-tui，有 <name> 则透传直接接入会话
     const tuiPath = require('path').join(__dirname, 'rcc-tui');
     const tuiArgs = arg ? [tuiPath, '--attach', arg] : [tuiPath];
-    try {
-      require('child_process').execFileSync(
-        process.execPath, tuiArgs,
-        { stdio: 'inherit' }
-      );
-    } catch (e) { process.exit(e.status || 0); }
-    break;
+    // Ctrl+C / Ctrl+\ 会同时发给前台进程组里的父子进程：父进程若被默认动作杀掉，
+    // rcc-tui 就成了孤儿，和 shell 抢同一个终端。父进程忽略这两个信号，由 rcc-tui 自己决定怎么处理
+    process.on('SIGINT', () => {});
+    process.on('SIGQUIT', () => {});
+    const r = require('child_process').spawnSync(process.execPath, tuiArgs, { stdio: 'inherit' });
+    if (r.error) { console.error(r.error.message); process.exit(1); }
+    if (r.signal) {
+      const num = require('os').constants.signals[r.signal] || 1;
+      process.exit(128 + num);
+    }
+    process.exit(r.status || 0);
   }
   case 'log':
   case 'l':
@@ -249,13 +272,23 @@ switch (cmd) {
   case 'restart':
   case 'reload':
   case 'status':
-    // 转发给 rcc-server
+    // 转发给 rcc-server（Windows 上是 PowerShell 版本，bash 脚本无法直接执行）
     try {
-      require('child_process').execFileSync(
-        path.join(__dirname, 'rcc-server'), [cmd],
-        { stdio: 'inherit' }
-      );
-    } catch (e) { process.exit(e.status || 1); }
+      if (IS_WIN) {
+        require('child_process').execFileSync(
+          'powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'rcc-server.ps1'), cmd],
+          { stdio: 'inherit' }
+        );
+      } else {
+        require('child_process').execFileSync(
+          path.join(__dirname, 'rcc-server'), [cmd],
+          { stdio: 'inherit' }
+        );
+      }
+    } catch (e) {
+      if (e.status == null && e.message) console.error(e.message);
+      process.exit(e.status || 1);
+    }
     break;
   case 'update': {
     const { execSync } = require('child_process');
@@ -297,6 +330,13 @@ switch (cmd) {
       }
     }
 
+    // .env 会被 rcc-server 以 shell 方式 source：含空格/&/$ 等字符的值必须加单引号
+    function envq(v) {
+      v = v == null ? '' : String(v);
+      if (/^[A-Za-z0-9_@%+=:,.\/-]*$/.test(v)) return v;
+      return `'${v.replace(/'/g, `'\\''`)}'`;
+    }
+
     function writeEnv(values) {
       const existing = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8').split(/\r?\n/) : [];
       const keys = new Set(Object.keys(values));
@@ -305,11 +345,11 @@ switch (cmd) {
         if (m && keys.has(m[1])) {
           const key = m[1];
           keys.delete(key);
-          return `${key}=${values[key] || ''}`;
+          return `${key}=${envq(values[key])}`;
         }
         return line;
       }).filter((line, idx, arr) => line || idx < arr.length - 1);
-      for (const key of keys) lines.push(`${key}=${values[key] || ''}`);
+      for (const key of keys) lines.push(`${key}=${envq(values[key])}`);
       fs.writeFileSync(envFile, lines.join('\n') + '\n');
       try { fs.chmodSync(envFile, 0o600); } catch (_) {}
     }
@@ -337,6 +377,12 @@ switch (cmd) {
     try { serverHashBefore = pipe('git ls-files -s ' + RESTART_PATHS).toString(); } catch (_) {}
 
     // 2. git pull（先还原 package-lock.json 避免 rebase 冲突）
+    let branch = '';
+    try { branch = pipe('git rev-parse --abbrev-ref HEAD').toString().trim(); } catch (_) {}
+    if (branch && branch !== 'main') {
+      // 在其他分支上直接 rebase 到 origin/main 会改写本地分支历史
+      err(L(`当前在分支 ${branch}，update 只更新 main。请切回 main 或手动 git pull`, `Current branch is ${branch}; update only tracks main. Switch to main or run git pull manually`));
+    }
     try { pipe('git checkout -- client/package-lock.json server/package-lock.json 2>/dev/null || true'); } catch (_) {}
     try { run('git pull --rebase origin main'); ok(L('代码已更新', 'Code updated')); }
     catch (_) { err(L('git pull 失败，请检查网络或手动执行: git pull --rebase origin main', 'git pull failed; check the network or run: git pull --rebase origin main')); }
@@ -352,7 +398,7 @@ switch (cmd) {
       try {
         execSync('npm install --loglevel=error', { cwd: path.join(dir, 'server'), stdio: 'pipe' });
         console.log(' ✓');
-      } catch (e) { console.log(''); err(L('npm install (server) 失败: ', 'npm install (server) failed: ') + e.message); }
+      } catch (e) { console.log(''); err(L('npm install (server) 失败（服务未重启）: ', 'npm install (server) failed (service not restarted): ') + e.message); }
     }
 
     // 5. 前端构建
@@ -361,7 +407,7 @@ switch (cmd) {
       execSync('npm install --loglevel=error', { cwd: path.join(dir, 'client'), stdio: 'pipe' });
       execSync('npm run build', { cwd: path.join(dir, 'client'), stdio: 'pipe' });
       console.log(' ✓');
-    } catch (e) { console.log(''); err(L('前端构建失败: ', 'Frontend build failed: ') + e.message); }
+    } catch (e) { console.log(''); err(L('前端构建失败（服务未重启/重载，修复后重新执行 remotecc update）: ', 'Frontend build failed (service not restarted/reloaded; fix and rerun remotecc update): ') + e.message); }
 
     // 5.1. 旧版本升级补齐 Codex / Agent 代理配置
     migrateEnv();

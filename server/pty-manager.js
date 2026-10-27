@@ -1,4 +1,5 @@
 const pty = require('node-pty');
+const { StringDecoder } = require('string_decoder');
 const net = require('net');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
@@ -12,6 +13,8 @@ const SCROLLBACK_LIMIT = 500 * 1024; // 500KB
 const HTTP_POLL_DEFAULT_WAIT = 5000;
 const HTTP_POLL_MAX_WAIT = 8000;
 const MAX_HTTP_INPUT_BYTES = 64 * 1024;
+// 慢客户端（弱网手机）积压的未发送数据上限；超过后断开，客户端重连时走回放拿到最新屏幕
+const WS_MAX_BUFFERED = 8 * 1024 * 1024;
 const REPLAY_SCROLLBACK_LINES = Math.max(100, parseInt(process.env.RCC_REPLAY_SCROLLBACK, 10) || 3000);
 
 // 屏幕镜像依赖可选：未安装时回退到原始输出回放
@@ -88,7 +91,13 @@ function wsClient(ws) {
     type: 'ws',
     id: uuidv4(),
     cols: 80, rows: 24,   // 该客户端上报的终端尺寸
-    send(data)    { try { if (ws.readyState === 1) ws.send(data); } catch (_) {} },
+    send(data) {
+      try {
+        if (ws.readyState !== 1) return;
+        if (ws.bufferedAmount > WS_MAX_BUFFERED) { ws.terminate(); return; }
+        ws.send(data);
+      } catch (_) {}
+    },
     sendJSON(obj) { try { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); } catch (_) {} },
     close()       { try { ws.close(); } catch (_) {} },
     _ws: ws,
@@ -100,7 +109,14 @@ function unixClient(socket) {
     type: 'unix',
     id: uuidv4(),
     cols: 80, rows: 24,   // 该客户端上报的终端尺寸（通过 OOB RESIZE 帧更新）
-    send(data)    { try { if (!socket.destroyed) socket.write(data); } catch (_) {} },
+    send(data) {
+      try {
+        if (socket.destroyed) return;
+        // 与 WS 一致：本地终端卡住不读时，别让输出无限堆在 proxy 内存里
+        if (socket.writableLength > WS_MAX_BUFFERED) { socket.destroy(); return; }
+        socket.write(data);
+      } catch (_) {}
+    },
     sendJSON(_)   {},
     close()       { try { socket.destroy(); } catch (_) {} },
     _socket: socket,
@@ -289,6 +305,9 @@ restoreDeadSessions();
 
 // ── Unix socket server per session ────────────────────────────────────────────
 
+const RESIZE_PREFIX = 'RESIZE:';
+const RESIZE_FRAME_MAX = 64;
+
 function startSocketServer(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return;
@@ -304,6 +323,13 @@ function startSocketServer(sessionId) {
     session.clients.add(client);
 
     let inBuf = '';
+    // 多字节 UTF-8 字符可能被拆在两个 data 块里，逐块 toString 会变成乱码；用同一个 decoder 保留半个字符
+    const decoder = new StringDecoder('utf8');
+    const writePty = bin => {
+      if (!session.ptyProcess) return;
+      const text = decoder.write(Buffer.from(bin, 'binary'));
+      if (text) session.ptyProcess.write(text);
+    };
     socket.on('data', buf => {
       inBuf += buf.toString('binary');
       // Parse out-of-band resize frames: \x00RESIZE:<cols>:<rows>\n
@@ -313,19 +339,28 @@ function startSocketServer(sessionId) {
         const nullIdx = inBuf.indexOf('\x00');
         if (nullIdx !== -1) {
           // pass everything before \x00 as PTY input
-          if (nullIdx > 0 && session.ptyProcess) {
-            session.ptyProcess.write(Buffer.from(inBuf.slice(0, nullIdx), 'binary').toString());
-          }
+          if (nullIdx > 0) writePty(inBuf.slice(0, nullIdx));
           const rest = inBuf.slice(nullIdx + 1);
+          // Ctrl+Space / Ctrl+@ 也会产生 \x00：后面不是 RESIZE: 前缀就按普通输入透传，
+          // 否则会一直等 \n，把之后的输入全部扣住再丢掉，终端看起来像卡死
+          if (!rest.startsWith(RESIZE_PREFIX) && !(rest.length < RESIZE_PREFIX.length && RESIZE_PREFIX.startsWith(rest))) {
+            writePty('\x00');
+            inBuf = rest;
+            processed = true;
+            continue;
+          }
           const nlIdx = rest.indexOf('\n');
-          if (nlIdx !== -1) {
+          if (nlIdx === -1 && rest.length > RESIZE_FRAME_MAX) {
+            // 超长仍无换行，不是合法的 resize 帧
+            writePty('\x00' + rest);
+            inBuf = '';
+          } else if (nlIdx !== -1) {
             const frame = rest.slice(0, nlIdx);
             inBuf = rest.slice(nlIdx + 1);
             if (frame.startsWith('RESIZE:')) {
               const parts = frame.slice(7).split(':');
-              const cols = parseInt(parts[0], 10);
-              const rows = parseInt(parts[1], 10);
-              if (cols > 0 && rows > 0) {
+              if (parseInt(parts[0], 10) > 0 && parseInt(parts[1], 10) > 0) {
+                const { cols, rows } = normalizeSize(parts[0], parts[1]);
                 // 更新该 unix client 记录的尺寸
                 client.cols = cols;
                 client.rows = rows;
@@ -343,7 +378,7 @@ function startSocketServer(sessionId) {
           if (inBuf && session.ptyProcess) {
             // 输入时 resize 到该 unix client 的尺寸
             try { session.ptyProcess.resize(client.cols || 80, client.rows || 24); } catch (_) {}
-            session.ptyProcess.write(Buffer.from(inBuf, 'binary').toString());
+            writePty(inBuf);
             session.lastActiveAt = Date.now();
           }
           inBuf = '';
@@ -371,7 +406,9 @@ function defaultSessionName(cwd) {
   return path.basename(cwd) || cwd || '/';
 }
 
-function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, extraArgs, requestId, cols = 80, rows = 24, env: clientEnv = {} }) {
+function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, extraArgs, requestId, cols: rawCols, rows: rawRows, env: clientEnv = {} }) {
+  // 客户端上报的尺寸不可信：非数字/0/超大值会让 node-pty spawn 抛错或分配巨大屏幕镜像
+  const { cols, rows } = normalizeSize(rawCols, rawRows);
   // 防重复：同一个 wsId 已有 session，直接复用
   if (wsToSession.has(wsId)) {
     const existing = wsToSession.get(wsId);
@@ -515,6 +552,7 @@ function createSession(ws, wsId, { workingDir, resumeSessionId, name, agent, ext
       sessions.delete(sessionId);
       disposeScreenMirror(session);
       logCheckCounters.delete(sessionId);
+      removeSessionLog(session);
       saveMeta();
       broadcastSessionList();
     }, 5000);
@@ -654,7 +692,8 @@ function destroyShell(shellId = '1') {
   notifyHttpWaiters(shell);
 }
 
-function spawnSharedShell(ws, { shellId = '1', cwd, cols = 80, rows = 24, env: clientEnv = {} }) {
+function spawnSharedShell(ws, { shellId = '1', cwd, cols: rawCols, rows: rawRows, env: clientEnv = {} }) {
+  const { cols, rows } = normalizeSize(rawCols, rawRows);
   const id = normalizeShellId(shellId);
   const shellCwd = resolveShellCwd(cwd);
   const shellBin = selectShellBin();
@@ -720,7 +759,9 @@ function spawnSharedShell(ws, { shellId = '1', cwd, cols = 80, rows = 24, env: c
   return shell;
 }
 
-function attachShell(ws, wsId, { shellId = '1', cwd, cols = 80, rows = 24, env = {} }) {
+function attachShell(ws, wsId, { shellId = '1', cwd, cols: rawCols, rows: rawRows, env = {} }) {
+  const hasSize = rawCols != null && rawRows != null;
+  const { cols, rows } = normalizeSize(rawCols, rawRows);
   const id = normalizeShellId(shellId);
   detachShellClient(wsId);
   let shell = getShell(id);
@@ -730,8 +771,8 @@ function attachShell(ws, wsId, { shellId = '1', cwd, cols = 80, rows = 24, env =
   }
 
   const client = wsClient(ws);
-  client.cols = cols || shell.cols || 80;
-  client.rows = rows || shell.rows || 24;
+  client.cols = hasSize ? cols : (shell.cols || cols);
+  client.rows = hasSize ? rows : (shell.rows || rows);
   shell.clients.add(client);
   wsToShellClient.set(wsId, { shellId: id, client });
 
@@ -796,8 +837,9 @@ function handleMessage(ws, wsId, raw) {
       const shellBinding = wsToShellClient.get(wsId);
       const shellClient = shellBinding?.client;
       if (shellClient) {
-        shellClient.cols = msg.cols || 80;
-        shellClient.rows = msg.rows || 24;
+        const { cols, rows } = normalizeSize(msg.cols, msg.rows);
+        shellClient.cols = cols;
+        shellClient.rows = rows;
       }
       const shell = shellBinding && getShell(shellBinding.shellId);
       if (shell?.ptyProcess && shellClient) {
@@ -840,11 +882,15 @@ function handleMessage(ws, wsId, raw) {
       attachSession(ws, wsId, msg.sessionId);
       break;
 
-    case 'resize':
-      if (entry) { entry.client.cols = msg.cols || 80; entry.client.rows = msg.rows || 24; }
-      if (session && session.ptyProcess)
-        session.ptyProcess.resize(msg.cols || 80, msg.rows || 24);
+    case 'resize': {
+      // 非法尺寸会让 node-pty 同步抛错，在 ws 消息回调里抛出会直接打崩 proxy、带走所有会话
+      const { cols, rows } = normalizeSize(msg.cols, msg.rows);
+      if (entry) { entry.client.cols = cols; entry.client.rows = rows; }
+      if (session && session.ptyProcess) {
+        try { session.ptyProcess.resize(cols, rows); } catch (_) {}
+      }
       break;
+    }
 
     case 'kill': {
       // 支持两种方式：msg.sessionId 直接指定，或使用当前绑定的 session
@@ -867,7 +913,7 @@ function handleMessage(ws, wsId, raw) {
       break;
 
     case 'input':
-      if (session && session.ptyProcess && msg.data) {
+      if (session && session.ptyProcess && typeof msg.data === 'string' && msg.data) {
         resizeToClient(entry?.client, session);
         session.ptyProcess.write(msg.data);
         session.lastActiveAt = Date.now();
@@ -1031,9 +1077,20 @@ function deleteSessionHttp(sessionId) {
   sessions.delete(sessionId);
   disposeScreenMirror(session);
   logCheckCounters.delete(sessionId);
+  removeSessionLog(session);
   saveMeta();
   broadcastSessionList();
   return { ok: true, found: true };
+}
+
+// 会话移出内存后日志已无法通过任何接口读取（readLog 依赖内存中的会话），及时删除，避免长期运行时堆积
+function removeSessionLog(session) {
+  if (!session.logPath) return;
+  const logPath = session.logPath;
+  const unlink = () => fs.unlink(logPath, () => {});
+  const stream = session.logStream;
+  if (stream && !stream.closed && !stream.destroyed) stream.once('close', unlink);
+  else unlink();
 }
 
 function renameSessionHttp(sessionId, params = {}) {

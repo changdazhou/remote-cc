@@ -30,10 +30,50 @@ function validateToken(tok) {
   return true;
 }
 
+// token 失效时通知持有长连接的一方（WS 只在握手时鉴权，改密码后已建立的连接要主动断开）
+const invalidationListeners = new Set();
+function onTokensInvalidated(listener) {
+  invalidationListeners.add(listener);
+}
+
 function invalidateWebTokens() {
   for (const [tok, meta] of tokens.entries()) {
     if (typeof meta === 'number' || !meta.local) tokens.delete(tok);
   }
+  for (const listener of invalidationListeners) {
+    try { listener(); } catch (_) {}
+  }
+}
+
+// ── 登录限流：按来源 IP 统计失败次数，防止暴力猜密码 ──────────────────────────
+const LOGIN_MAX_FAILURES = 10;
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const loginFailures = new Map(); // ip → { count, first }
+
+function loginBlocked(ip) {
+  const rec = loginFailures.get(ip);
+  if (!rec) return false;
+  if (Date.now() - rec.first > LOGIN_WINDOW_MS) { loginFailures.delete(ip); return false; }
+  return rec.count >= LOGIN_MAX_FAILURES;
+}
+
+function recordLoginResult(ip, ok) {
+  if (ok) { loginFailures.delete(ip); return; }
+  const now = Date.now();
+  const rec = loginFailures.get(ip);
+  if (!rec || now - rec.first > LOGIN_WINDOW_MS) loginFailures.set(ip, { count: 1, first: now });
+  else rec.count++;
+  if (loginFailures.size > 10000) {
+    for (const [key, item] of loginFailures) if (now - item.first > LOGIN_WINDOW_MS) loginFailures.delete(key);
+  }
+}
+
+// 返回 { status, body }，供 proxy.js（原生 http）和 index.js（express）共用
+function attemptLogin(ip, username, password) {
+  if (loginBlocked(ip)) return { status: 429, body: { error: 'Too many failed attempts, try again later' } };
+  const ok = validateCredentials(username, password);
+  recordLoginResult(ip, ok);
+  return ok ? { status: 200, body: { token: createToken() } } : { status: 401, body: { error: 'Invalid credentials' } };
 }
 
 function publicError(message, status = 400) {
@@ -64,9 +104,16 @@ function timingSafeEqualHex(a, b) {
   return crypto.timingSafeEqual(left, right);
 }
 
+function timingSafeEqualText(a, b) {
+  // 先做摘要再比较，长度固定，避免按字节提前返回泄露密码前缀
+  const left = crypto.createHash('sha256').update(String(a ?? '')).digest();
+  const right = crypto.createHash('sha256').update(String(b ?? '')).digest();
+  return crypto.timingSafeEqual(left, right);
+}
+
 function verifyPassword(password) {
   const override = readAuthOverride();
-  if (!override) return password === RC_PASS;
+  if (!override) return timingSafeEqualText(password, RC_PASS);
   const computed = hashPassword(password || '', override.salt);
   return timingSafeEqualHex(computed, override.passwordHash);
 }
@@ -132,11 +179,8 @@ const LOCAL_TOKEN = initLocalToken();
 // POST /api/login → { token }
 function loginHandler(req, res) {
   const { username, password } = req.body || {};
-  if (validateCredentials(username, password)) {
-    res.json({ token: createToken() });
-  } else {
-    res.status(401).json({ error: 'Invalid credentials' });
-  }
+  const result = attemptLogin(req.socket?.remoteAddress || '', username, password);
+  res.status(result.status).json(result.body);
 }
 
 function changePasswordHandler(req, res) {
@@ -160,9 +204,17 @@ function httpAuth(req, res, next) {
 
 // WS upgrade 验证：?token=xxx
 function wsAuth(req) {
-  const url = new URL(req.url, 'http://localhost');
-  const tok = url.searchParams.get('token');
+  const tok = wsToken(req);
   return validateToken(tok);
+}
+
+function wsToken(req) {
+  // 畸形的 upgrade 目标会让 new URL 抛错；这里在 upgrade 事件里同步执行，抛出会直接打崩进程
+  try {
+    return new URL(req.url || '/', 'http://localhost').searchParams.get('token') || '';
+  } catch (_) {
+    return '';
+  }
 }
 
 module.exports = {
@@ -173,6 +225,9 @@ module.exports = {
   validateCredentials,
   changePassword,
   invalidateWebTokens,
+  onTokensInvalidated,
+  attemptLogin,
+  wsToken,
   validateTokenExported: validateToken,
   createTokenExported: createToken,
   LOCAL_TOKEN_FILE,

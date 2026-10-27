@@ -20,7 +20,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import Terminal from './Terminal.vue';
-import { api, createWS } from '../api/index.js';
+import { api, createWS, splitInputChunks } from '../api/index.js';
 import { useI18n } from '../i18n.js';
 
 const { t } = useI18n();
@@ -139,6 +139,7 @@ function markConnected(nextTransport, { refresh = true } = {}) {
 
 function start() {
   const run = ++wsRun;
+  shellExited = false;
   cleanup(false);
   closing = false;
   status.value = 'connecting';
@@ -212,7 +213,7 @@ function start() {
       if (msg.type === 'shell_replay_start') {
         replayingOutput = true;
         terminalRef.value?.beginReplay?.();
-        terminalRef.value?.clear?.();
+        terminalRef.value?.clear?.({ reset: true });
         return;
       }
       if (msg.type === 'shell_replay_end') {
@@ -240,7 +241,7 @@ function start() {
       }
       if (msg.type === 'shell_exit') {
         clearTimeout(readyTimer);
-        status.value = 'closed';
+        markShellExited();
         return;
       }
     } catch (_) {}
@@ -280,15 +281,36 @@ function sendInput(data) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'shell_input', shellId: props.shellId, data }));
   } else if (status.value === 'connected' || status.value === 'connecting') {
-    api.shell.input({
-      data,
-      cols: terminalRef.value?.getCols?.() ?? 80,
-      rows: terminalRef.value?.getRows?.() ?? 24,
-    }, props.shellId).catch(() => {});
+    sendHttpInput(data);
   }
 }
 
+// HTTP 回退时逐个串行发送：并发请求到达顺序不确定，快速输入会乱序；大段粘贴按块拆分
+let httpInputQueue = '';
+let httpInputBusy = false;
+function sendHttpInput(data) {
+  if (!data) return;
+  httpInputQueue += data;
+  if (httpInputBusy) return;
+  httpInputBusy = true;
+  const pump = () => {
+    if (!httpInputQueue) { httpInputBusy = false; return; }
+    const chunk = splitInputChunks(httpInputQueue)[0];
+    httpInputQueue = httpInputQueue.slice(chunk.length);
+    api.shell.input({
+      data: chunk,
+      cols: terminalRef.value?.getCols?.() ?? 80,
+      rows: terminalRef.value?.getRows?.() ?? 24,
+    }, props.shellId).catch(() => {}).finally(pump);
+  };
+  pump();
+}
+
 function onInput(data) {
+  if (shellExited) {
+    if (data.includes('\r')) start();
+    return;
+  }
   sendInput(data);
   terminalRef.value?.trackInput?.(data);
 }
@@ -305,16 +327,26 @@ function onPaste(text) {
   sendInput(text);
 }
 
+// shell 进程退出（exit / Ctrl+D）后，WS 仍连着但没有 PTY 可写，提示并在回车时重新拉起
+let shellExited = false;
+function markShellExited() {
+  status.value = 'closed';
+  if (shellExited) return;
+  shellExited = true;
+  terminalRef.value?.write?.(`\r\n\x1b[90m${t.value.shell_exited_hint}\x1b[0m\r\n`);
+}
+
 function applyHttpSnapshot(snapshot, clearFirst = false) {
   if (!snapshot) return;
   clearTimeout(readyTimer);
   cwd.value = snapshot.cwd || cwd.value;
-  const shouldRefresh = Boolean(clearFirst || snapshot.reset || snapshot.output || reconnectNoticePending);
+  // 普通输出不触发 refresh：refresh 会 scrollToBottom，打断向上翻看和选中复制（轮询也走这里）
+  const shouldRefresh = Boolean(clearFirst || snapshot.reset || reconnectNoticePending);
   const suppressReplayInput = Boolean(clearFirst || snapshot.reset);
-  if (clearFirst || snapshot.reset) terminalRef.value?.clear?.();
+  if (clearFirst || snapshot.reset) terminalRef.value?.clear?.({ reset: true });
   if (snapshot.output) terminalRef.value?.write?.(snapshot.output, { suppressInput: suppressReplayInput });
   if (snapshot.alive === false) {
-    status.value = 'closed';
+    markShellExited();
     refreshTerminalView();
     return;
   }

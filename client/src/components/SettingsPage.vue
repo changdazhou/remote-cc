@@ -457,7 +457,7 @@ async function refreshAgents() {
     const list = await api.getAgents();
     agentStatuses.value = Array.isArray(list) ? list : [];
   } catch (_) {
-    agentStatuses.value = [];
+    // 偶发失败保留上次结果，不清空列表（否则"开始"按钮会被短暂禁用）
   } finally {
     agentLoading.value = false;
   }
@@ -472,7 +472,8 @@ watch(() => [settings.claudeCommand, settings.codexCommand, settings.grokCommand
 
 onMounted(() => {
   refreshAgents();
-  agentTimer = setInterval(refreshAgents, 15000);
+  // 页面在后台时跳过轮询
+  agentTimer = setInterval(() => { if (!document.hidden) refreshAgents(); }, 15000);
 });
 
 onBeforeUnmount(() => {

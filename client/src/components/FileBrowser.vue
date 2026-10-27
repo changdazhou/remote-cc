@@ -15,49 +15,51 @@
           v-for="(crumb, i) in breadcrumbs"
           :key="crumb.path"
           class="fb-crumb"
+          role="button" tabindex="0"
           @click="navigateTo(crumb.path)"
+          @keydown.enter.space.self.prevent="navigateTo(crumb.path)"
         >{{ crumb.label }}</span>
       </div>
 
       <input
         v-model="pathInput"
         class="fb-path-input"
-        :placeholder="currentPath || '输入路径…'"
+        :placeholder="currentPath || t.fb_path_placeholder"
         @keyup.enter="navigateTo(pathInput)"
         spellcheck="false"
       />
 
-      <label class="fb-hidden-toggle" title="显示隐藏文件">
+      <label class="fb-hidden-toggle" :title="t.fb_show_hidden_title">
         <input type="checkbox" v-model="showHidden" @change="loadDir(currentPath)" />
-        <span>隐藏文件</span>
+        <span>{{ t.fb_hidden_files }}</span>
       </label>
 
-      <button class="fb-tool-btn" :class="{ active: mkdirOpen }" title="新建文件夹" @click="openMkdirForm">
+      <button class="fb-tool-btn" :class="{ active: mkdirOpen }" :title="t.fb_new_folder" @click="openMkdirForm">
         <AppIcon name="folder-plus" />
       </button>
 
-      <button class="fb-tool-btn fb-upload-btn" :class="{ active: uploading }" title="上传到当前目录" @click="openUploadPicker">
+      <button class="fb-tool-btn fb-upload-btn" :class="{ active: uploading }" :title="t.fb_upload_title" @click="openUploadPicker">
         <AppIcon v-if="uploading" name="spinner" spin />
         <AppIcon v-else name="upload" />
-        <span class="fb-tool-label">上传</span>
+        <span class="fb-tool-label">{{ t.fb_upload }}</span>
       </button>
       <input ref="uploadInput" type="file" multiple class="fb-file-input" @change="onUploadSelect" />
 
-      <button class="fb-close-btn" @click="$emit('close')" title="关闭"><AppIcon name="close" /></button>
+      <button class="fb-close-btn" @click="$emit('close')" :title="t.fb_close"><AppIcon name="close" /></button>
 
       <form v-if="mkdirOpen" class="fb-mkdir-form" @submit.prevent="createFolder">
         <input
           ref="mkdirInput"
           v-model="mkdirName"
           class="fb-mkdir-input"
-          placeholder="新建文件夹"
+          :placeholder="t.fb_new_folder"
           spellcheck="false"
           @keyup.esc="cancelMkdir"
         />
-        <button class="fb-mkdir-action primary" :disabled="creatingDir || !mkdirName.trim()" title="创建" type="submit">
+        <button class="fb-mkdir-action primary" :disabled="creatingDir || !mkdirName.trim()" :title="t.fb_create" type="submit">
           <AppIcon name="check" />
         </button>
-        <button class="fb-mkdir-action" title="取消" type="button" @click="cancelMkdir">
+        <button class="fb-mkdir-action" :title="t.cancel" type="button" @click="cancelMkdir">
           <AppIcon name="close" />
         </button>
       </form>
@@ -68,23 +70,26 @@
 
       <!-- 文件列表 -->
       <div class="fb-list-panel">
-        <div v-if="loading" class="fb-status">加载中…</div>
+        <div v-if="loading" class="fb-status">{{ t.fb_loading }}</div>
         <div v-else-if="error" class="fb-status fb-status-err">{{ error }}</div>
         <div v-else class="fb-entries">
           <!-- 向上一级 -->
-          <div v-if="parentPath" class="fb-entry fb-dir" @click="navigateTo(parentPath)">
+          <div v-if="parentPath" class="fb-entry fb-dir" role="button" tabindex="0" @click="navigateTo(parentPath)" @keydown.enter.space.self.prevent="navigateTo(parentPath)">
             <span class="fb-icon fb-icon-dir"><AppIcon name="parent" /></span>
             <span class="fb-name">..</span>
           </div>
-          <div v-if="!entries.length" class="fb-status">目录为空</div>
+          <div v-if="!entries.length" class="fb-status">{{ t.fb_empty_dir }}</div>
+          <div v-if="listTruncated" class="fb-status">{{ t.fb_list_truncated.replace('{n}', entries.length).replace('{total}', listTruncated) }}</div>
           <!-- 条目 -->
           <div
             v-for="entry in entries"
             :key="entry.name"
             class="fb-entry"
             :class="{ 'fb-dir': entry.type === 'dir', 'fb-selected': selectedEntry?.name === entry.name }"
+            role="button" tabindex="0"
             @click="selectEntry(entry)"
             @dblclick="onDblClick(entry)"
+            @keydown.enter.space.self.prevent="selectEntry(entry)"
           >
             <span class="fb-icon" :class="entry.type === 'dir' ? 'fb-icon-dir' : 'fb-icon-file'">
               <AppIcon :name="entry.type === 'dir' ? 'folder' : fileIconName(entry.ext)" />
@@ -92,10 +97,10 @@
             <span class="fb-name" :title="entry.name">{{ entry.name }}</span>
             <span class="fb-meta">
               <span v-if="entry.type === 'file'" class="fb-size">{{ fmtSize(entry.size) }}</span>
-              <button v-if="entry.type === 'file'" class="fb-copy-btn" title="下载文件" @click.stop="downloadEntry(entry)">
+              <button v-if="entry.type === 'file'" class="fb-copy-btn" :title="t.fb_download_file" @click.stop="downloadEntry(entry)">
                 <AppIcon name="download" />
               </button>
-              <button class="fb-copy-btn" title="复制路径" @click.stop="copyPath(entry)">
+              <button class="fb-copy-btn" :title="t.fb_copy_path" @click.stop="copyPath(entry)">
                 <AppIcon name="copy" />
               </button>
             </span>
@@ -107,25 +112,25 @@
       <div class="fb-preview-panel">
         <div v-if="!preview.show" class="fb-preview-empty">
           <AppIcon name="empty" class="fb-preview-empty-icon" />
-          <div>点击文件预览，双击全屏查看</div>
+          <div>{{ t.fb_preview_hint }}</div>
         </div>
         <template v-else>
           <div class="fb-preview-header">
             <span class="fb-preview-filename">{{ selectedEntry?.name }}</span>
             <span class="fb-preview-ext" v-if="selectedEntry?.ext">{{ selectedEntry.ext }}</span>
             <span class="fb-preview-size">{{ fmtSize(preview.size) }}</span>
-            <span v-if="preview.truncated" class="fb-preview-truncated">已截断</span>
-            <button class="fb-preview-fullscreen" title="全屏查看" @click="fullscreen = true">
+            <span v-if="preview.truncated" class="fb-preview-truncated">{{ t.fb_truncated }}</span>
+            <button class="fb-preview-fullscreen" :title="t.fb_fullscreen" @click="fullscreen = true">
               <AppIcon name="fullscreen" />
             </button>
-            <button class="fb-preview-copy" title="下载文件" @click="downloadEntry(selectedEntry)">
-              <AppIcon name="download" /> 下载
+            <button class="fb-preview-copy" :title="t.fb_download_file" @click="downloadEntry(selectedEntry)">
+              <AppIcon name="download" /> {{ t.fb_download }}
             </button>
-            <button class="fb-preview-copy" title="复制文件路径" @click="copyPath(selectedEntry)">
-              <AppIcon name="copy" /> 复制路径
+            <button class="fb-preview-copy" :title="t.fb_copy_file_path" @click="copyPath(selectedEntry)">
+              <AppIcon name="copy" /> {{ t.fb_copy_path }}
             </button>
           </div>
-          <div v-if="preview.loading" class="fb-preview-loading">加载中…</div>
+          <div v-if="preview.loading" class="fb-preview-loading">{{ t.fb_loading }}</div>
           <div v-else-if="preview.type === 'text'" class="fb-preview-code">
             <div class="fb-code-wrap">
               <div class="fb-line-nums" aria-hidden="true">
@@ -141,11 +146,11 @@
             <AppIcon :name="fileIconName(selectedEntry?.ext)" class="fb-unsupported-icon" />
             <div class="fb-unsupported-name">{{ selectedEntry?.name }}</div>
             <div class="fb-unsupported-info">
-              <span v-if="preview.type === 'image_too_large'">图片过大（{{ fmtSize(preview.size) }}）</span>
-              <span v-else>{{ fmtSize(preview.size) }} · 二进制文件</span>
+              <span v-if="preview.type === 'image_too_large'">{{ t.fb_image_too_large.replace('{size}', fmtSize(preview.size)) }}</span>
+              <span v-else>{{ fmtSize(preview.size) }} · {{ t.fb_binary_file }}</span>
             </div>
-            <button class="fb-copy-path-btn" @click="copyPath(selectedEntry)"><AppIcon name="copy" /> 复制路径</button>
-            <button class="fb-copy-path-btn" @click="downloadEntry(selectedEntry)"><AppIcon name="download" /> 下载</button>
+            <button class="fb-copy-path-btn" @click="copyPath(selectedEntry)"><AppIcon name="copy" /> {{ t.fb_copy_path }}</button>
+            <button class="fb-copy-path-btn" @click="downloadEntry(selectedEntry)"><AppIcon name="download" /> {{ t.fb_download }}</button>
           </div>
         </template>
       </div>
@@ -156,13 +161,13 @@
       <div class="fb-upload-progress-text">
         <span class="fb-upload-progress-name">{{ uploadProgress.name }}</span>
         <span>{{ uploadProgress.total > 1 ? `${uploadProgress.index}/${uploadProgress.total} · ` : '' }}{{ uploadProgress.percent }}%</span>
-        <button class="fb-upload-cancel" title="取消上传" @click.stop="cancelUpload"><AppIcon name="close" /></button>
+        <button class="fb-upload-cancel" :title="t.fb_cancel_upload" @click.stop="cancelUpload"><AppIcon name="close" /></button>
       </div>
       <div class="fb-upload-progress-track"><div class="fb-upload-progress-bar" :style="{ width: uploadProgress.percent + '%' }"></div></div>
       <div class="fb-upload-progress-detail">
         <span>{{ formatBytes(uploadProgress.loaded) }} / {{ formatBytes(uploadProgress.size) }}</span>
-        <span v-if="uploadProgress.loaded >= uploadProgress.size && uploadProgress.size">服务器处理中…</span>
-        <span v-else-if="uploadProgress.speed > 0">{{ formatBytes(uploadProgress.speed) }}/s · 剩余 {{ formatDuration(uploadProgress.eta) }}</span>
+        <span v-if="uploadProgress.loaded >= uploadProgress.size && uploadProgress.size">{{ t.fb_server_processing }}</span>
+        <span v-else-if="uploadProgress.speed > 0">{{ formatBytes(uploadProgress.speed) }}/s · {{ t.fb_remaining.replace('{eta}', formatDuration(uploadProgress.eta)) }}</span>
       </div>
     </div>
     <transition name="fb-toast-fade">
@@ -170,7 +175,7 @@
     </transition>
     <div v-if="dragOver" class="fb-drag-overlay">
       <AppIcon name="upload" />
-      <span>拖放文件上传到 {{ currentPath || '/' }}</span>
+      <span>{{ t.fb_drop_hint.replace('{path}', currentPath || '/') }}</span>
     </div>
 
     <!-- ── 全屏预览 ─────────────────────────────────────────────── -->
@@ -182,13 +187,13 @@
             <span class="fb-preview-filename">{{ selectedEntry?.name }}</span>
             <span class="fb-preview-ext" v-if="selectedEntry?.ext">{{ selectedEntry.ext }}</span>
             <span class="fb-preview-size">{{ fmtSize(preview.size) }}</span>
-            <span v-if="preview.truncated" class="fb-preview-truncated">已截断</span>
-            <button class="fb-preview-copy" @click="downloadEntry(selectedEntry)"><AppIcon name="download" /> 下载</button>
-            <button class="fb-preview-copy" @click="copyPath(selectedEntry)"><AppIcon name="copy" /> 复制路径</button>
-            <button class="fb-fs-close" @click="fullscreen = false" title="关闭全屏"><AppIcon name="close" /></button>
+            <span v-if="preview.truncated" class="fb-preview-truncated">{{ t.fb_truncated }}</span>
+            <button class="fb-preview-copy" @click="downloadEntry(selectedEntry)"><AppIcon name="download" /> {{ t.fb_download }}</button>
+            <button class="fb-preview-copy" @click="copyPath(selectedEntry)"><AppIcon name="copy" /> {{ t.fb_copy_path }}</button>
+            <button class="fb-fs-close" @click="fullscreen = false" :title="t.fb_close_fullscreen"><AppIcon name="close" /></button>
           </div>
           <!-- 全屏内容（复用同一份 preview 数据，无需重新请求） -->
-          <div v-if="preview.loading" class="fb-preview-loading">加载中…</div>
+          <div v-if="preview.loading" class="fb-preview-loading">{{ t.fb_loading }}</div>
           <div v-else-if="preview.type === 'text'" class="fb-preview-code fb-fs-content">
             <div class="fb-code-wrap">
               <div class="fb-line-nums" aria-hidden="true">
@@ -204,8 +209,8 @@
             <AppIcon :name="fileIconName(selectedEntry?.ext)" class="fb-unsupported-icon" />
             <div class="fb-unsupported-name">{{ selectedEntry?.name }}</div>
             <div class="fb-unsupported-info">
-              <span v-if="preview.type === 'image_too_large'">图片过大（{{ fmtSize(preview.size) }}）</span>
-              <span v-else>{{ fmtSize(preview.size) }} · 二进制文件</span>
+              <span v-if="preview.type === 'image_too_large'">{{ t.fb_image_too_large.replace('{size}', fmtSize(preview.size)) }}</span>
+              <span v-else>{{ fmtSize(preview.size) }} · {{ t.fb_binary_file }}</span>
             </div>
           </div>
         </div>
@@ -218,15 +223,18 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { api, formatBytes, formatDuration } from '../api/index.js';
 import AppIcon from './AppIcon.vue';
+import { useI18n } from '../i18n.js';
 
 const props = defineProps({
   initialPath: { type: String, default: '' },
 });
 const emit = defineEmits(['close', 'path-change']);
+const { t } = useI18n();
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const currentPath   = ref('');
 const entries       = ref([]);
+const listTruncated = ref(0);   // 服务端截断时的总条目数
 const showHidden    = ref(false);
 const selectedEntry = ref(null);
 const loading       = ref(false);
@@ -291,23 +299,29 @@ const lineCount = computed(() => {
 });
 
 // ── 目录加载 ──────────────────────────────────────────────────────────────────
+// 连续切换目录时，晚到的旧响应不能覆盖当前目录（否则上传等操作会落到错误目录）
+let dirToken = 0;
 async function loadDir(reqPath) {
   loading.value = true;
   error.value   = '';
   entries.value = [];
+  listTruncated.value = 0;
   selectedEntry.value = null;
   preview.show  = false;
   fullscreen.value = false;
+  const tok = ++dirToken;
   try {
     const res = await api.fs.list(reqPath || '/', showHidden.value);
+    if (tok !== dirToken) return;
     currentPath.value = res.path;
     pathInput.value   = res.path;
     entries.value     = res.entries;
+    listTruncated.value = res.truncated ? (res.total || res.entries.length) : 0;
     emit('path-change', res.path);
   } catch (e) {
-    error.value = e.message || '加载失败';
+    if (tok === dirToken) error.value = e.message || t.value.fb_load_failed;
   } finally {
-    loading.value = false;
+    if (tok === dirToken) loading.value = false;
   }
 }
 
@@ -379,14 +393,14 @@ let toastTimer = null;
 async function copyPath(entry) {
   const p = fullPath(entry);
   if (!p) {
-    showToast('复制失败');
+    showToast(t.value.fb_copy_failed);
     return;
   }
   if (await copyText(p)) {
     showToast(p);
     return;
   }
-  showToast('复制失败');
+  showToast(t.value.fb_copy_failed);
 }
 
 async function copyText(text) {
@@ -449,9 +463,9 @@ async function createFolder() {
     await loadDir(currentPath.value || '/');
     const entry = entries.value.find(item => item.type === 'dir' && item.name === created.name);
     if (entry) selectEntry(entry);
-    showToast(`已新建文件夹: ${created.name}`);
+    showToast(t.value.fb_folder_created.replace('{name}', created.name));
   } catch (err) {
-    showToast(`新建失败: ${err.message || err}`);
+    showToast(t.value.fb_create_failed.replace('{msg}', err.message || err));
   } finally {
     creatingDir.value = false;
   }
@@ -472,7 +486,7 @@ async function onDropUpload(e) {
 async function uploadFiles(files) {
   if (!files.length) return;
   if (uploading.value) {
-    showToast('正在上传，请等待当前上传完成');
+    showToast(t.value.fb_upload_busy);
     return;
   }
   const targetDir = currentPath.value || '/';
@@ -507,15 +521,15 @@ async function uploadFiles(files) {
     if ((currentPath.value || '/') === targetDir) await loadDir(targetDir);
   }
   if (abort.signal.aborted) {
-    showToast(ok ? `已取消上传（已完成 ${ok} 个）` : '已取消上传');
+    showToast(ok ? t.value.fb_upload_cancelled_partial.replace('{n}', ok) : t.value.fb_upload_cancelled);
   } else if (!failed.length) {
-    showToast(`已上传 ${ok} 个文件`);
+    showToast(t.value.fb_upload_done.replace('{n}', ok));
   } else if (ok) {
-    showToast(`已上传 ${ok} 个，失败 ${failed.length} 个: ${failed.map(f => f.name).join(', ')}`);
+    showToast(t.value.fb_upload_partial.replace('{n}', ok).replace('{m}', failed.length).replace('{names}', failed.map(f => f.name).join(', ')));
   } else if (failed.length === 1) {
-    showToast(`上传失败: ${failed[0].name} (${failed[0].message})`);
+    showToast(t.value.fb_upload_failed.replace('{msg}', `${failed[0].name} (${failed[0].message})`));
   } else {
-    showToast(`上传失败: ${failed.map(f => f.name).join(', ')}`);
+    showToast(t.value.fb_upload_failed.replace('{msg}', failed.map(f => f.name).join(', ')));
   }
 }
 
@@ -526,7 +540,7 @@ function cancelUpload() {
 async function downloadEntry(entry) {
   const p = fullPath(entry);
   if (!entry || entry.type !== 'file' || !p) {
-    showToast('下载失败');
+    showToast(t.value.fb_download_failed);
     return;
   }
   try {
@@ -539,9 +553,9 @@ async function downloadEntry(entry) {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    showToast(`下载: ${entry.name}`);
+    showToast(t.value.fb_downloading.replace('{name}', entry.name));
   } catch (err) {
-    showToast(`下载失败: ${err.message || err}`);
+    showToast(t.value.fb_download_failed_msg.replace('{msg}', err.message || err));
   }
 }
 

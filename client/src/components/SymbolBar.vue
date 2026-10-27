@@ -65,6 +65,7 @@
 <script setup>
 import { computed, reactive, useSlots } from 'vue';
 import AppIcon from './AppIcon.vue';
+import { useI18n } from '../i18n.js';
 
 const props = defineProps({
   currentLine: { type: String, default: '' },
@@ -72,6 +73,7 @@ const props = defineProps({
   activeModifier: { type: String, default: '' },
 });
 const emit = defineEmits(['input', 'modifier']);
+const { t } = useI18n();
 const slots = useSlots();
 const hasPrefixSlot = computed(() => Boolean(slots.prefix));
 const activeModifier = computed(() => props.activeModifier);
@@ -83,10 +85,10 @@ const shellMode = computed(() => {
 });
 
 // ── CC 模式 ──────────────────────────────────────────────────────────────────
-const CC_SYMBOLS = [
+const CC_SYMBOLS = computed(() => [
   { key: 'mode',  label: 'MODE', value: '\x1b[Z' },
-  { key: 'newline', label: '换行', icon: 'enter', value: '\n', title: '换行 (LF)' },
-  { key: 'enter', label: '发送', icon: 'send', value: '\r', title: '发送 (CR)' },
+  { key: 'newline', label: t.value.sb_newline, icon: 'enter', value: '\n', title: t.value.sb_newline_title },
+  { key: 'enter', label: t.value.sb_send, icon: 'send', value: '\r', title: t.value.sb_send_title },
   { key: 'esc',   label: 'Esc', value: '\x1b' },
   { key: 'tab',   label: 'Tab', value: '\t' },
   { key: 'slash', label: '/',   value: '/' },
@@ -95,7 +97,7 @@ const CC_SYMBOLS = [
   { key: 'down',  label: '↓',   value: '\x1b[B' },
   { key: 'left',  label: '←',   value: '\x1b[D' },
   { key: 'right', label: '→',   value: '\x1b[C' },
-];
+]);
 
 // ── Shell 模式：两行移动端专用键位。修饰键由 Terminal.vue 作用到下一次输入。──
 const SH_ROWS = [

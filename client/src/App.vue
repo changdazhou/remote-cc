@@ -12,7 +12,7 @@
           autocomplete="username" @keyup.enter="doLogin" />
         <input v-model="loginPass" class="neon-input" type="password" :placeholder="t.login_pass"
           autocomplete="current-password" @keyup.enter="doLogin" />
-        <div v-if="loginError" class="login-error">{{ t.login_error }}</div>
+        <div v-if="loginError" class="login-error">{{ loginError === 'throttled' ? t.login_throttled : t.login_error }}</div>
         <button class="start-btn" :disabled="logging" @click="doLogin">
           {{ logging ? t.login_loading : t.login_btn }}
         </button>
@@ -34,21 +34,23 @@
             </button>
             <!-- Dropdown -->
             <div v-if="switcherOpen" class="switcher-dropdown">
-              <div class="switcher-section-label">SESSIONS</div>
-              <button
+              <div class="switcher-section-label">{{ t.switcher_sessions }}</div>
+              <!-- 行内两个并列按钮：button 里不能再嵌套 button（无效 HTML，读屏软件也无法聚焦到停止按钮） -->
+              <div
                 v-for="s in aliveSessions" :key="s.sessionId"
-                class="switcher-item"
+                class="switcher-row"
                 :class="{ current: s.sessionId === activeSessionId }"
-                @click="pickSession(s)"
               >
-                <span class="switcher-dot live"></span>
-                <span class="switcher-item-name">{{ s.name }}</span>
-                <span class="switcher-item-cwd">{{ shortCwd(s.workingDir) }}</span>
-                <button class="switcher-kill-btn" :title="t.stop_session"
-                  @click.stop="killSession(s); switcherOpen = false">
+                <button class="switcher-item" @click="pickSession(s)">
+                  <span class="switcher-dot live"></span>
+                  <span class="switcher-item-name">{{ s.name }}</span>
+                  <span class="switcher-item-cwd">{{ shortCwd(s.workingDir) }}</span>
+                </button>
+                <button class="switcher-kill-btn" :title="t.stop_session" :aria-label="`${t.stop_session}: ${s.name}`"
+                  @click="killSession(s); switcherOpen = false">
                   <AppIcon name="trash" />
                 </button>
-              </button>
+              </div>
               <div v-if="!aliveSessions.length" class="switcher-empty">{{ t.no_sessions }}</div>
               <div class="switcher-divider"></div>
               <button v-if="currentMeta?.alive"
@@ -175,7 +177,7 @@
           </div>
           <Terminal
             v-for="entry in termList"
-            :key="entry.sid"
+            :key="entry.uiKey || entry.sid"
             v-show="entry.sid === activeSessionId"
             :theme="theme"
             optimistic-echo
@@ -195,7 +197,7 @@
       <div v-if="killConfirm.show" class="kc-overlay" @click="killConfirm.show = false">
         <div class="kc-box" @click.stop>
           <div class="kc-title">{{ t.stop_session }}</div>
-          <div class="kc-msg">终止 <strong>{{ killConfirm.session?.name }}</strong>？会话将结束并退出终端。</div>
+          <div class="kc-msg">{{ t.kc_msg_prefix }}<strong>{{ killConfirm.session?.name }}</strong>{{ t.kc_msg_suffix }}</div>
           <div class="kc-btns">
             <button class="kc-cancel" @click="killConfirm.show = false">{{ t.cancel }}</button>
             <button class="kc-ok" @click="confirmKillAndExit">{{ t.stop_btn }} <AppIcon name="stop" /></button>
@@ -208,7 +210,7 @@
 
 <script setup>
 import { ref, reactive, shallowReactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
-import { login, logout, isLoggedIn, getSavedUsername, createWS, api, setUnauthorizedHandler } from './api/index.js';
+import { login, logout, isLoggedIn, getSavedUsername, createWS, api, setUnauthorizedHandler, splitInputChunks } from './api/index.js';
 import Terminal          from './components/Terminal.vue';
 import LogViewer         from './components/LogViewer.vue';
 import ConversationList  from './components/ConversationList.vue';
@@ -266,7 +268,7 @@ async function doLogin() {
     settings.username = loginUser.value;
     init();
   } catch (e) {
-    loginError.value = 'Invalid credentials';
+    loginError.value = e?.status === 429 ? 'throttled' : 'Invalid credentials';
   } finally {
     logging.value = false;
   }
@@ -277,6 +279,9 @@ let controlWS = null;
 let reconnTimer = null;
 const wsReady = ref(false);
 const WS_FALLBACK_DELAY = 3000;
+// HTTP 降级后尝试切回 WS 的间隔（指数退避）
+const WS_UPGRADE_MIN_DELAY = 15000;
+const WS_UPGRADE_MAX_DELAY = 5 * 60 * 1000;
 const HTTP_POLL_WAIT = 5000;
 const CONTROL_HTTP_POLL_WAIT = 3000;
 const CONTROL_WS_FALLBACK_DELAY = 2000;
@@ -295,32 +300,52 @@ function applySessionList(sessions) {
 }
 
 function initControlWS() {
+  // 未登录（token 失效、已退出）时不再重连，否则登录页会每 3s 发一次注定 401 的请求
+  if (!authed.value) return;
   refreshSessionList();
   startControlHttpFallback(CONTROL_WS_FALLBACK_DELAY);
 
   if (controlWS && controlWS.readyState < 2) return;
-  controlWS = createWS();
-  controlWS.onopen    = () => {
+  const ws = createWS();
+  controlWS = ws;
+  // 应用层心跳：半死连接（手机切后台、换网络）不会触发 close，收不到 pong 就主动断开并降级到 HTTP 轮询
+  let pingTimer = null;
+  let pongTimer = null;
+  const stopPing = () => { clearInterval(pingTimer); clearTimeout(pongTimer); pingTimer = pongTimer = null; };
+  ws.onopen    = () => {
     wsReady.value = true;
     clearTimeout(controlFallbackTimer);
     stopControlHttpPolling();
+    stopPing();
+    if (settings.wsKeepAlive === false) return;
+    pingTimer = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      try { ws.send(JSON.stringify({ type: 'terminal_ping', ts: Date.now() })); } catch (_) { return; }
+      clearTimeout(pongTimer);
+      pongTimer = setTimeout(() => { try { ws.close(); } catch (_) {} }, 8000);
+    }, 25000);
   };
-  controlWS.onmessage = (evt) => {
+  ws.onmessage = (evt) => {
     try {
       const msg = JSON.parse(evt.data);
-      if (msg.type === 'session_list') applySessionList(msg.sessions);
+      if (msg.type === 'terminal_pong') { clearTimeout(pongTimer); pongTimer = null; }
+      else if (msg.type === 'session_list') applySessionList(msg.sessions);
     } catch (_) {}
   };
-  controlWS.onclose   = () => {
+  ws.onclose   = () => {
+    stopPing();
+    // 已被新连接替换（退出登录后重新登录等）时，旧连接的 close 不再触发重连
+    if (controlWS !== ws && controlWS) return;
     wsReady.value = false;
     clearTimeout(controlFallbackTimer);
+    if (!authed.value) return;
     // WS 断开时验证 token 是否仍有效；401 会由 setUnauthorizedHandler 处理
     refreshSessionList();
     startControlHttpFallback(0);
     reconnTimer = setTimeout(initControlWS, 3000);
   };
-  controlWS.onerror   = () => {
-    if (!wsReady.value) startControlHttpFallback(0);
+  ws.onerror   = () => {
+    if (controlWS === ws && !wsReady.value) startControlHttpFallback(0);
   };
 }
 
@@ -477,7 +502,9 @@ function connectEntryWS(entry) {
   if (entry._destroy) { entry._destroy(); entry._destroy = null; }
 
   let destroyed = false;
-  let reconnDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
+  // 退避时长挂在 entry 上：每次重连都会重新进入本函数，局部变量会让退避永远停在初始值
+  const baseReconnDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
+  if (!entry._reconnDelay) entry._reconnDelay = baseReconnDelay;
   let reconnTimeout = null;
   let fallbackTimer = null;
   let heartbeatTimer = null;
@@ -548,7 +575,6 @@ function connectEntryWS(entry) {
   ws.onopen = () => {
     opened = true;
     clearTimeout(fallbackTimer);
-    reconnDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
     markEntryConnected(entry, 'ws', { refresh: false });
 
     // nextTick 确保 Terminal 组件已 mount 并完成初始 fit
@@ -589,28 +615,18 @@ function connectEntryWS(entry) {
 
   ws.onmessage = (evt) => {
     const data = evt.data;
-    try {
-      const msg = JSON.parse(data);
-      if (!msg?.type) throw 0;
-
+    // 只对解析做 try：分支内部的异常不能落到"原始输出"路径，把控制消息原文写进终端
+    let msg = null;
+    try { msg = JSON.parse(data); } catch (_) {}
+    if (msg?.type) {
       switch (msg.type) {
         case 'session_id': {
           const realId = msg.sessionId;
           if (msg.name) entry.name = msg.name;
-          if (entry.sid !== realId) {
-            const oldSid = entry.sid;
-            // Move termRef
-            const el = termRefs[oldSid];
-            delete termRefs[oldSid];
-            // Update entry.sid in-place (reactive array element)
-            entry.sid = realId;
-            if (el) termRefs[realId] = el;
-            // Update activeSessionId if it was pointing to the placeholder
-            if (activeSessionId.value === oldSid) activeSessionId.value = realId;
-            // Mark as attach for reconnect
-            entry.attachSessionId = realId;
-            localStorage.setItem('rcc_last_session', realId);
-          }
+          if (!adoptRealSessionId(entry, realId)) return;
+          // 会话真正接通后才重置退避，连上即被断开的循环不会以初始间隔反复重连
+          entry._reconnDelay = baseReconnDelay;
+          entry._wsUpgradeDelay = 0;
           markEntryConnected(entry, 'ws');
           markHeartbeatAlive();
           startHeartbeat();
@@ -629,7 +645,8 @@ function connectEntryWS(entry) {
           const el = termRefs[entry.sid];
           if (el) {
             el.beginReplay?.();
-            el.clear();
+            // 回放会重新下发完整屏幕和终端模式，先整体复位，避免残留鼠标/括号粘贴/备用屏等旧模式
+            el.clear({ reset: true });
           }
           return;
         }
@@ -661,8 +678,8 @@ function connectEntryWS(entry) {
           return;
         }
       }
-    } catch (_) {}
-    // Raw PTY data
+    }
+    // Raw PTY data（含恰好是 JSON 但类型未知的输出）
     if (entry.connectionStatus !== 'connected') markEntryConnected(entry, 'ws', { refresh: false });
     const el = termRefs[entry.sid];
     if (el) el.write(data, { suppressInput: !!entry._replayingOutput });
@@ -682,12 +699,13 @@ function connectEntryWS(entry) {
     }
     markEntryDisconnected(entry);
     entry.connectionStatus = 'connecting';
+    const delay = entry._reconnDelay;
     reconnTimeout = setTimeout(() => {
       if (destroyed) return;
-      const maxDelay = Math.max(reconnDelay, Number(settings.maxReconnectDelay) || 15000);
-      reconnDelay = Math.min(reconnDelay * 1.5, maxDelay);
+      const maxDelay = Math.max(delay, Number(settings.maxReconnectDelay) || 15000);
+      entry._reconnDelay = Math.min(delay * 1.5, maxDelay);
       connectEntryWS(entry);
-    }, reconnDelay);
+    }, delay);
   };
 
   entry._destroy = () => {
@@ -713,26 +731,48 @@ function isPermanentHttpError(err) {
   return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
 }
 
+function rememberLastSession(sid) {
+  try { localStorage.setItem('rcc_last_session', sid); } catch (_) {}
+}
+
+// 把占位条目换成服务端分配的真实会话 ID。服务端对同一 Agent+目录+resume 会直接 attach 已有会话，
+// 若前端已有该会话的条目，保留旧条目、丢弃新条目，避免两个条目共用一个 sid（输出重复、删除一个另一个黑屏）。
+// 返回 false 表示当前条目已被丢弃，调用方应停止处理。
+function adoptRealSessionId(entry, realId) {
+  if (!realId || entry.sid === realId) return true;
+  const oldSid = entry.sid;
+  const existing = termList.find(e => e !== entry && e.sid === realId);
+  if (existing) {
+    entry._destroy?.();
+    entry._destroy = null;
+    clearEntryConnectionBadge(entry);
+    delete termRefs[oldSid];
+    const idx = termList.indexOf(entry);
+    if (idx !== -1) termList.splice(idx, 1);
+    if (activeSessionId.value === oldSid) activeSessionId.value = realId;
+    return false;
+  }
+  const el = termRefs[oldSid];
+  delete termRefs[oldSid];
+  entry.sid = realId;
+  if (el) termRefs[realId] = el;
+  if (activeSessionId.value === oldSid) activeSessionId.value = realId;
+  // 重连时按真实 ID attach
+  entry.attachSessionId = realId;
+  rememberLastSession(realId);
+  return true;
+}
+
 function applyHttpSessionSnapshot(entry, snapshot, shouldClear = false) {
   if (!snapshot) return;
-  const realId = snapshot.sessionId;
-  if (realId && entry.sid !== realId) {
-    const oldSid = entry.sid;
-    const el = termRefs[oldSid];
-    delete termRefs[oldSid];
-    entry.sid = realId;
-    if (el) termRefs[realId] = el;
-    if (activeSessionId.value === oldSid) activeSessionId.value = realId;
-    entry.attachSessionId = realId;
-    localStorage.setItem('rcc_last_session', realId);
-  }
+  if (snapshot.sessionId && !adoptRealSessionId(entry, snapshot.sessionId)) return;
   if (snapshot.name) entry.name = snapshot.name;
   if (typeof snapshot.alive === 'boolean') entry.alive = snapshot.alive;
 
   const el = termRefs[entry.sid];
   const shouldRefresh = Boolean(shouldClear || snapshot.reset || snapshot.output || entry._reconnectNoticePending);
   const suppressReplayInput = Boolean(shouldClear || snapshot.reset);
-  if ((shouldClear || snapshot.reset) && el) el.clear();
+  if ((shouldClear || snapshot.reset) && el) el.clear({ reset: true });
   if (snapshot.output && el) el.write(snapshot.output, { suppressInput: suppressReplayInput });
   if (el && snapshot.output) nextTick(() => el.scrollToBottom());
   if (snapshot.alive === false) {
@@ -756,7 +796,7 @@ function handleEntryExit(entry, exitCode) {
     const sid = entry.sid;
     entry._destroy?.();
     clearEntryConnectionBadge(entry);
-    const idx = termList.findIndex(e => e.sid === sid);
+    const idx = termList.indexOf(entry);
     if (idx !== -1) { delete termRefs[sid]; termList.splice(idx, 1); }
     if (activeSessionId.value === sid) {
       activeSessionId.value = '';
@@ -793,19 +833,25 @@ async function startEntryHttp(entry) {
         if (pollController?.signal.aborted) continue;
         retryDelay = Math.max(500, Number(settings.reconnectDelay) || 1000);
         if (destroyed) return;
+        // 普通输出不触发 refresh（refresh 会 scrollToBottom，打断向上翻看和选中复制；smartWrite 已负责贴底）
         markEntryConnected(entry, 'http', {
-          refresh: Boolean(result.reset || result.output || entry._reconnectNoticePending),
+          refresh: Boolean(result.reset || entry._reconnectNoticePending),
         });
-        if (result.reset) termRefs[entry.sid]?.clear?.();
+        if (result.reset) termRefs[entry.sid]?.clear?.({ reset: true });
         if (result.output) termRefs[entry.sid]?.write?.(result.output, { suppressInput: !!result.reset });
         cursor = result.cursor ?? cursor;
         if (result.alive === false) {
           handleHttpExit(entry, result.exitCode);
           return;
         }
-      } catch (_) {
+      } catch (err) {
         if (destroyed) return;
         if (pollController?.signal.aborted) continue;
+        // 会话已在服务端清理（404 等），重试不会成功，按已退出处理
+        if (isPermanentHttpError(err)) {
+          handleHttpExit(entry, null);
+          return;
+        }
         markEntryDisconnected(entry);
         entry.connectionStatus = 'connecting';
         await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -816,9 +862,41 @@ async function startEntryHttp(entry) {
     }
   };
 
+  // HTTP 只是降级通道：定期用一个独立的探测 WS 试探，能连通再切回 WS。
+  // 不直接重走 connectEntryWS，否则 WS 仍不可用时每次尝试都会清屏重放一遍
+  let wsProbe = null;
+  let wsProbeTimer = null;
+  const scheduleWsProbe = () => {
+    clearTimeout(wsProbeTimer);
+    const delay = entry._wsUpgradeDelay || WS_UPGRADE_MIN_DELAY;
+    wsProbeTimer = setTimeout(() => {
+      if (destroyed) return;
+      entry._wsUpgradeDelay = Math.min(delay * 2, WS_UPGRADE_MAX_DELAY);
+      let settled = false;
+      const probe = createWS();
+      wsProbe = probe;
+      const finish = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(probeTimeout);
+        wsProbe = null;
+        try { probe.close(); } catch (_) {}
+        if (destroyed) return;
+        if (ok && entry.transport === 'http' && entry.connectionStatus !== 'closed') connectEntryWS(entry);
+        else scheduleWsProbe();
+      };
+      const probeTimeout = setTimeout(() => finish(false), WS_FALLBACK_DELAY);
+      probe.onopen = () => finish(true);
+      probe.onerror = () => finish(false);
+      probe.onclose = () => finish(false);
+    }, delay);
+  };
+
   entry._destroy = () => {
     destroyed = true;
     entry._abortHttpPoll = null;
+    clearTimeout(wsProbeTimer);
+    try { wsProbe?.close(); } catch (_) {}
     try { pollController?.abort(); } catch (_) {}
   };
 
@@ -843,8 +921,10 @@ async function startEntryHttp(entry) {
           });
       if (destroyed) return;
       applyHttpSessionSnapshot(entry, snapshot, !!entry.attachSessionId);
+      if (destroyed) return;
       flushPendingInputHttp(entry);
       poll(snapshot.cursor ?? 0);
+      scheduleWsProbe();
       return;
     } catch (err) {
       if (destroyed) return;
@@ -904,6 +984,8 @@ function openSession(s) {
 
   const entry = shallowReactive({
     sid: s.sessionId,
+    // 组件 key 固定不变：sid 从占位符换成真实 ID 时不能重建 Terminal，否则已有输出和 ref 都会丢
+    uiKey: s.sessionId,
     ws: null,
     alive: !!s.alive,
     wsStarted: false,
@@ -943,6 +1025,7 @@ function startSession({ workingDir, name, resumeSessionId, agent = 'claude', ext
   const placeholder = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const entry = shallowReactive({
     sid: placeholder,
+    uiKey: placeholder,
     ws: null,
     alive: true,
     wsStarted: false,
@@ -1022,7 +1105,8 @@ function renameSession({ sessionId, name }) {
 
 function openLog(s) {
   prevView.value = view.value;
-  logTarget.value = s;
+  // 每次打开都换新对象，LogViewer 据此重新加载（同一会话再次打开也能看到最新日志）
+  logTarget.value = { ...s };
   view.value = 'log';
 }
 
@@ -1052,11 +1136,15 @@ function doLogout() {
   clearTimeout(reconnTimer);
   clearTimeout(controlFallbackTimer);
   stopControlHttpPolling();
+  controlWS?.close();
+  controlWS = null;
   for (const entry of termList) {
     entry._destroy?.();
     clearEntryConnectionBadge(entry);
   }
   termList.splice(0);
+  sessionList.value = [];
+  activeSessionId.value = '';
   settings.username = '';
   sessionsLoading.value = true;
 }
@@ -1075,12 +1163,14 @@ setUnauthorizedHandler(() => {
   clearTimeout(controlFallbackTimer);
   stopControlHttpPolling();
   controlWS?.close();
+  controlWS = null;
   for (const entry of termList) {
     entry._destroy?.();
     clearEntryConnectionBadge(entry);
   }
   termList.splice(0);
   sessionList.value = [];
+  activeSessionId.value = '';
   sessionsLoading.value = true;
 });
 
@@ -1158,6 +1248,12 @@ function bufferPendingInput(entry, data) {
   return true;
 }
 
+// 输入一律包成 {type:'input'} 发送：服务端会先尝试按 JSON 解析每一帧，
+// 直接发原文时，粘贴的 {"type":"kill"} 之类 JSON 会被当成控制消息执行或吞掉
+function sendWSInput(ws, data) {
+  ws.send(JSON.stringify({ type: 'input', data }));
+}
+
 function flushPendingInputWS(entry, ws) {
   const pending = entry._pendingInput;
   if (!pending || !pending.length) return;
@@ -1165,7 +1261,7 @@ function flushPendingInputWS(entry, ws) {
   entry._pendingInputLen = 0;
   if (ws?.readyState !== WebSocket.OPEN) return;
   for (const chunk of pending) {
-    try { ws.send(chunk); } catch (_) { return; }
+    try { sendWSInput(ws, chunk); } catch (_) { return; }
   }
 }
 
@@ -1174,12 +1270,29 @@ function flushPendingInputHttp(entry) {
   if (!pending || !pending.length) return;
   entry._pendingInput = [];
   entry._pendingInputLen = 0;
-  const el = termRefs[entry.sid];
-  api.terminal.input(entry.attachSessionId || entry.sid, {
-    data: pending.join(''),
-    cols: el?.getCols?.() ?? 80,
-    rows: el?.getRows?.() ?? 24,
-  }).catch(() => {});
+  sendHttpInput(entry, pending.join(''));
+}
+
+// HTTP 输入按会话串行发送：并发的多个 fetch 可能乱序到达服务端，导致字符顺序错乱；
+// 请求在途期间的输入合并为下一批
+function sendHttpInput(entry, data) {
+  if (!data) return;
+  entry._httpInputQueue = (entry._httpInputQueue || '') + data;
+  if (entry._httpInputBusy) return;
+  entry._httpInputBusy = true;
+  const pump = () => {
+    const queued = entry._httpInputQueue || '';
+    if (!queued) { entry._httpInputBusy = false; return; }
+    const chunk = splitInputChunks(queued)[0];
+    entry._httpInputQueue = queued.slice(chunk.length);
+    const el = termRefs[entry.sid];
+    api.terminal.input(entry.attachSessionId || entry.sid, {
+      data: chunk,
+      cols: el?.getCols?.() ?? 80,
+      rows: el?.getRows?.() ?? 24,
+    }).catch(() => {}).finally(pump);
+  };
+  pump();
 }
 
 function clearPendingInput(entry) {
@@ -1192,15 +1305,11 @@ function onTermInput(sid, data) {
   const el = termRefs[sid];
   let delivered = false;
   if (entry?.ws?.readyState === WebSocket.OPEN) {
-    entry.ws.send(data);
+    sendWSInput(entry.ws, data);
     delivered = true;
   } else if (entry?.transport === 'http') {
     interruptEntryHttpPoll(entry);
-    api.terminal.input(entry.attachSessionId || entry.sid, {
-      data,
-      cols: el?.getCols?.() ?? 80,
-      rows: el?.getRows?.() ?? 24,
-    }).catch(() => {});
+    sendHttpInput(entry, data);
     delivered = true;
   } else if (entry && entry.connectionStatus !== 'closed') {
     // WS 重连窗口：缓冲按键，待连接恢复后回放，避免静默丢字
@@ -1214,15 +1323,10 @@ function onTermInput(sid, data) {
 // 终端对查询的应答只在连接可用时实时发送；过期的应答不能缓冲到重连后再发
 function onTermResponse(sid, data) {
   const entry = findEntry(sid);
-  const el = termRefs[sid];
   if (entry?.ws?.readyState === WebSocket.OPEN) {
-    entry.ws.send(data);
+    sendWSInput(entry.ws, data);
   } else if (entry?.transport === 'http') {
-    api.terminal.input(entry.attachSessionId || entry.sid, {
-      data,
-      cols: el?.getCols?.() ?? 80,
-      rows: el?.getRows?.() ?? 24,
-    }).catch(() => {});
+    sendHttpInput(entry, data);
   }
 }
 function onTermResize(sid, { cols, rows }) {
@@ -1236,15 +1340,10 @@ function onTermResize(sid, { cols, rows }) {
 function onTermPaste(sid, text) {
   const entry = findEntry(sid);
   if (entry?.ws?.readyState === WebSocket.OPEN) {
-    entry.ws.send(text);
+    sendWSInput(entry.ws, text);
   } else if (entry?.transport === 'http') {
-    const el = termRefs[sid];
     interruptEntryHttpPoll(entry);
-    api.terminal.input(entry.attachSessionId || entry.sid, {
-      data: text,
-      cols: el?.getCols?.() ?? 80,
-      rows: el?.getRows?.() ?? 24,
-    }).catch(() => {});
+    sendHttpInput(entry, text);
   } else if (entry && entry.connectionStatus !== 'closed') {
     bufferPendingInput(entry, text);
   }
@@ -1261,16 +1360,11 @@ function sendToActiveTerminal(text) {
   }
   const entry = findEntry(sid);
   if (entry?.ws?.readyState === WebSocket.OPEN) {
-    entry.ws.send(text);
+    sendWSInput(entry.ws, text);
     view.value = 'terminal';
   } else if (entry?.transport === 'http') {
-    const el = termRefs[sid];
     interruptEntryHttpPoll(entry);
-    api.terminal.input(entry.attachSessionId || entry.sid, {
-      data: text,
-      cols: el?.getCols?.() ?? 80,
-      rows: el?.getRows?.() ?? 24,
-    }).catch(() => {});
+    sendHttpInput(entry, text);
     view.value = 'terminal';
   } else if (entry && entry.connectionStatus !== 'closed') {
     bufferPendingInput(entry, text);
@@ -2029,6 +2123,8 @@ body {
 }
 html[data-light] body { color-scheme: light; }
 button, input, select, textarea { font: inherit; }
+/* 等宽字体的连字会把 "--" 画成一条长横线，看起来像只输入了一个 "-" */
+input, textarea { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
 button {
   -webkit-tap-highlight-color: transparent;
 }
@@ -2259,6 +2355,15 @@ select:focus-visible {
 .switcher-item:hover { background: color-mix(in srgb, var(--neon) 8%, transparent); }
 .switcher-item.current { background: color-mix(in srgb, var(--neon) 12%, transparent); }
 .switcher-item.dead { opacity: .5; }
+.switcher-row {
+  display: flex; align-items: center; gap: 2px;
+  border-radius: var(--radius-sm); transition: background .12s;
+}
+.switcher-row:hover { background: color-mix(in srgb, var(--neon) 8%, transparent); }
+.switcher-row.current { background: color-mix(in srgb, var(--neon) 12%, transparent); }
+.switcher-row .switcher-item { flex: 1; min-width: 0; }
+.switcher-row .switcher-item:hover { background: none; }
+.switcher-row .switcher-kill-btn { margin-right: 6px; }
 .switcher-item-name {
   font-family: 'JetBrains Mono', monospace; font-size: 12px;
   color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

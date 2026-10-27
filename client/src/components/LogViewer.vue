@@ -3,15 +3,15 @@
     <div class="lv-header">
       <span class="lv-title">LOG — {{ session.name }}</span>
       <div class="lv-actions">
-        <button class="lv-btn" @click="load"><AppIcon name="refresh" /> Refresh</button>
-        <button class="lv-btn lv-close" @click="$emit('close')"><AppIcon name="close" /></button>
+        <button class="lv-btn" @click="load"><AppIcon name="refresh" /> {{ t.lv_refresh }}</button>
+        <button class="lv-btn lv-close" :title="t.lv_close" :aria-label="t.lv_close" @click="$emit('close')"><AppIcon name="close" /></button>
       </div>
     </div>
     <div class="lv-path">{{ session.logPath }}</div>
     <div class="lv-body" ref="bodyRef">
-      <div v-if="loading" class="lv-status">Loading...</div>
+      <div v-if="loading" class="lv-status">{{ t.lv_loading }}</div>
       <div v-else-if="error" class="lv-status lv-error">{{ error }}</div>
-      <pre v-else class="lv-pre">{{ content || '(empty)' }}</pre>
+      <pre v-else class="lv-pre">{{ content || t.lv_empty }}</pre>
     </div>
   </div>
 </template>
@@ -20,6 +20,7 @@
 import { ref, onMounted, watch } from 'vue';
 import { api } from '../api/index.js';
 import AppIcon from './AppIcon.vue';
+import { useI18n } from '../i18n.js';
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -31,21 +32,29 @@ const loading = ref(false);
 const error   = ref('');
 const bodyRef = ref(null);
 
+const { t } = useI18n();
+
+// 快速切换会话时，只接受最新一次请求的结果
+let loadToken = 0;
 async function load() {
+  const tok = ++loadToken;
   loading.value = true;
   error.value = '';
   try {
-    content.value = await api.getSessionLog(props.session.sessionId);
+    const text = await api.getSessionLog(props.session.sessionId);
+    if (tok !== loadToken) return;
+    content.value = text;
     setTimeout(() => { if (bodyRef.value) bodyRef.value.scrollTop = bodyRef.value.scrollHeight; }, 50);
   } catch (e) {
-    error.value = e.message;
+    if (tok === loadToken) error.value = e.message;
   } finally {
-    loading.value = false;
+    if (tok === loadToken) loading.value = false;
   }
 }
 
 onMounted(load);
-watch(() => props.session.sessionId, load);
+// 监听 session 对象本身：再次打开同一会话的日志也会重新加载，不显示上次的旧内容
+watch(() => props.session, load);
 </script>
 
 <style scoped>

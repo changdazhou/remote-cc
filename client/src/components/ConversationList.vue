@@ -30,10 +30,12 @@
         :key="s.sessionId"
         class="cl-item"
         :class="{ dead: !s.alive }"
+        role="button" tabindex="0"
         @click="$emit('open', s)"
+        @keydown.enter.space.self.prevent="$emit('open', s)"
       >
         <!-- Status dot -->
-        <div class="cl-status" :class="s.alive ? 'live' : 'dead'" :title="s.alive ? 'Running' : 'Ended'"></div>
+        <div class="cl-status" :class="s.alive ? 'live' : 'dead'" :title="s.alive ? t.cl_running : t.cl_ended"></div>
 
         <!-- Main content -->
         <div class="cl-info">
@@ -60,7 +62,7 @@
             <span class="cl-agent">{{ agentLabel(s.agent) }}</span>
             <span class="cl-cwd">{{ shortCwd(s.workingDir) }}</span>
             <span v-if="s.extraArgs?.length" class="cl-cwd" :title="s.extraArgs.join(' ')">{{ s.extraArgs.join(' ') }}</span>
-            <span v-if="(s.clientCount || 0) > 1" class="cl-attached" title="Multiple clients attached">
+            <span v-if="(s.clientCount || 0) > 1" class="cl-attached" :title="t.topbar_multi_attached_title">
               <AppIcon name="users" />{{ s.clientCount }}
             </span>
           </div>

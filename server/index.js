@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { v4: uuidv4 } = require('uuid');
-const { httpAuth, wsAuth, loginHandler, changePasswordHandler } = require('./auth');
+const { httpAuth, wsAuth, wsToken, loginHandler, changePasswordHandler, onTokensInvalidated, validateTokenExported, writeLocalToken } = require('./auth');
 const { getProjects, getSessions, readSession } = require('./history');
 const { getAgentStatuses } = require('./agent-config');
 const {
@@ -24,6 +24,20 @@ const RCC_DIR  = path.join(os.homedir(), '.rcc');
 const LOCK_FILE = path.join(RCC_DIR, 'server.lock');
 fs.mkdirSync(RCC_DIR, { recursive: true });
 
+// PID 可能已被系统复用给无关进程（重启机器/容器后很常见）：仅凭 kill(pid,0) 会误判“已在运行”，
+// 导致 watchdog 反复拉起又立即退出。Linux 上再核对 cmdline 是否真是 RemoteCC 服务进程。
+function isRccServerPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try { process.kill(pid, 0); } catch (e) { if (e.code !== 'EPERM') return false; }
+  if (process.platform !== 'linux') return true;
+  try {
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return /(?:^|[\/\0])(?:proxy|index)\.js(?:\0|$)/.test(cmdline);
+  } catch (_) {
+    return true;   // 读不到 /proc 时保守按存活处理
+  }
+}
+
 // 写入锁文件（含 pid 和端口），启动时检测已有实例
 try {
   const existing = fs.existsSync(LOCK_FILE)
@@ -31,10 +45,7 @@ try {
     : null;
 
   if (existing) {
-    // 检查进程是否仍在运行
-    let alive = false;
-    try { process.kill(existing.pid, 0); alive = true; } catch (_) {}
-    if (alive) {
+    if (isRccServerPid(existing.pid)) {
       console.error(
         `\n  ✗ RemoteCC 已在运行 (pid ${existing.pid}, port ${existing.port})\n` +
         `    如需重启，先运行: kill ${existing.pid}\n`
@@ -239,26 +250,69 @@ app.get('*', (req, res) => {
   fs.existsSync(p) ? res.sendFile(p) : res.status(404).send('Frontend not built.');
 });
 
+// 兜底错误处理：Express 默认会把错误堆栈（含服务器绝对路径）以 HTML 返回给客户端
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error('HTTP error:', err.message);
+  if (res.headersSent) { try { res.end(); } catch (_) {} return; }
+  res.status(status).json({ error: status >= 500 ? 'Internal server error' : (err.expose && err.message) || 'Bad request' });
+});
+
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 server.on('upgrade', (req, socket, head) => {
+  // 只接受 origin-form；畸形目标（如 //[ ）直接丢弃（与 proxy.js 一致）
+  if (!req.url.startsWith('/') || req.url.startsWith('//')) { socket.write('HTTP/1.1 400 Bad Request\r\n\r\n'); socket.destroy(); return; }
   if (!wsAuth(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   const wsId = uuidv4();
+  ws._rccToken = wsToken(req);
+  ws._rccAlive = true;
+  ws.on('pong', () => { ws._rccAlive = true; });
   registerWS(wsId, ws);
   // Send current session list immediately
   ws.send(JSON.stringify({ type: 'session_list', sessions: listSessions() }));
-  ws.on('message', data => handleMessage(ws, wsId, data.toString()));
+  ws.on('message', data => {
+    try { handleMessage(ws, wsId, data.toString()); }
+    catch (e) { console.error(`WS [${wsId}] message error:`, e.message); }
+  });
   ws.on('close',   ()   => { closeWS(wsId); unregisterWS(wsId); });
   ws.on('error',   err  => { console.error(`WS [${wsId}]:`, err.message); closeWS(wsId); unregisterWS(wsId); });
 });
 
+// 改密码后断开持有旧 token 的 WS；心跳回收半开连接（与 proxy.js 一致）
+onTokensInvalidated(() => {
+  for (const ws of wss.clients) {
+    if (!validateTokenExported(ws._rccToken)) ws.close(4001, 'Unauthorized');
+  }
+});
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (!ws._rccAlive) { ws.terminate(); continue; }
+    ws._rccAlive = false;
+    try { ws.ping(); } catch (_) {}
+  }
+}, 30000).unref();
+
 // 大文件上传/下载可能持续很久，不能套用默认的 5 分钟整请求超时
 server.requestTimeout = 0;
 
+// 与 proxy.js 一致：端口被占用时给出明确提示，而不是抛未捕获异常
+server.on('error', err => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`port ${PORT} is already in use. Stop the process using it or change PORT.`);
+  } else {
+    console.error('server error:', err && err.message ? err.message : err);
+  }
+  process.exit(1);
+});
+
 server.listen(PORT, () => {
+  // 监听成功后才写 local.token（remotecc / rcc-tui 靠它鉴权；失败的进程不能覆盖已生效的 token）
+  writeLocalToken();
   console.log(`RemoteCC  http://0.0.0.0:${PORT}`);
   console.log(`Auth: RC_USER=${process.env.RC_USER || 'admin'}`);
 });

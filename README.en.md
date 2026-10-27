@@ -160,6 +160,12 @@ Inside any session: **`Ctrl+]`** goes back to the menu without killing the agent
 ### 2026-10-27
 
 - **Session history**: Codex data directories under the home directory are detected automatically, so history shows up even when a wrapper command sets its own `CODEX_HOME` and `~/.rcc/agent.env` doesn't configure it; same for the web UI and `rcc-tui`
+- **Launch args**: consecutive `-` in options like `--model` no longer merge into a ligature, and `--` turned into a dash by mobile/Mac smart punctuation is restored automatically
+- **Stability**: malformed WebSocket requests, null bodies, and oversized bodies no longer crash the service or drop the connection (they return 400/413); terminal sizes are validated everywhere; error responses no longer expose server paths
+- **Security**: logins are refused for a while after 10 failures from one IP within 10 minutes; changing the password closes connections holding old tokens; login credentials are no longer passed into agent/shell environments; the internal app socket moved to `~/.rcc/app.sock` so instances on the same machine don't clobber each other
+- **Connections**: WebSocket heartbeats reclaim half-open connections and clients with too much queued output are dropped; HTTP fallback sends input in order and splits large pastes, then switches back once WebSocket is available
+- **UI**: the remaining UI text is translated in both languages; the session list, file browser, and directory picker work with the keyboard; very large folders show the first 5000 items with a notice
+- **CLI tools**: a stale lock whose PID was reused no longer looks like a running service; `restart` run from a RemoteCC terminal no longer dies halfway; `remotecc` no longer leaves an orphan on Ctrl+C and lists candidates when a session name is ambiguous; keys pressed after a session ends no longer trigger `rcc-tui` menu items, and terminal modes are restored when it is killed; `install.sh` keeps custom `.env` settings on reinstall and makes a backup; `remotecc update` only runs on main
 
 ### 2026-10-22
 

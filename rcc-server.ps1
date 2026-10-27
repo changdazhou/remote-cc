@@ -12,19 +12,30 @@ $ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServerDir   = Join-Path $ScriptDir "server"
 $PidFile     = "$env:TEMP\rcc-server.pid"
 $LogFile     = "$env:TEMP\rcc.log"
-$NodeExe     = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+$ErrLogFile  = "$env:TEMP\rcc.err.log"
+# 兼容 Windows PowerShell 5.1（不支持 ?. 运算符）
+$NodeCmd     = Get-Command node -ErrorAction SilentlyContinue
+$NodeExe     = if ($NodeCmd) { $NodeCmd.Source } else { $null }
 if (-not $NodeExe) { Write-Error "Node.js not found in PATH"; exit 1 }
 
 $Env:RC_USER  = if ($env:RC_USER)  { $env:RC_USER  } else { "admin" }
 $Env:RC_PASS  = if ($env:RC_PASS)  { $env:RC_PASS  } else { "changeme" }
 $Env:PORT     = if ($env:PORT)     { $env:PORT     } else { "8310" }
 
+# pid 文件残留时 PID 可能已被无关进程复用：核对命令行确实是本服务的 index.js，避免误杀
+function Is-RccPid($procId) {
+    if (-not $procId) { return $false }
+    $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+    if ($proc -eq $null) { return $false }
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $procId" -ErrorAction SilentlyContinue
+    if ($cim -eq $null -or -not $cim.CommandLine) { return $true }
+    return $cim.CommandLine -like "*index.js*"
+}
+
 function Is-Running {
     if (-not (Test-Path $PidFile)) { return $false }
-    $pid = Get-Content $PidFile -ErrorAction SilentlyContinue
-    if (-not $pid) { return $false }
-    $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-    return $proc -ne $null
+    $serverPid = Get-Content $PidFile -ErrorAction SilentlyContinue
+    return Is-RccPid $serverPid
 }
 
 function Start-Server {
@@ -34,26 +45,29 @@ function Start-Server {
     }
     Write-Host "Starting rcc-server on port $($Env:PORT)..."
     $proc = Start-Process -FilePath $NodeExe `
-        -ArgumentList (Join-Path $ServerDir "index.js") `
+        -ArgumentList ('"' + (Join-Path $ServerDir "index.js") + '"') `
         -WorkingDirectory $ServerDir `
         -RedirectStandardOutput $LogFile `
-        -RedirectStandardError $LogFile `
+        -RedirectStandardError $ErrLogFile `
         -PassThru -WindowStyle Hidden
     $proc.Id | Set-Content $PidFile
     Start-Sleep -Seconds 2
     if (Is-Running) {
         Write-Host "Started (pid $($proc.Id)), log: $LogFile"
     } else {
-        Write-Error "Failed to start. Check log: $LogFile"
+        Write-Error "Failed to start. Check log: $LogFile / $ErrLogFile"
     }
 }
 
 function Stop-Server {
     if (-not (Is-Running)) { Write-Host "rcc-server not running"; Remove-Item $PidFile -ErrorAction SilentlyContinue; return }
-    $pid = Get-Content $PidFile
-    Write-Host "Stopping rcc-server (pid $pid)..."
-    Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+    $serverPid = Get-Content $PidFile
+    Write-Host "Stopping rcc-server (pid $serverPid)..."
+    Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue
     Remove-Item $PidFile -ErrorAction SilentlyContinue
+    # 强制结束不会触发 index.js 的退出清理，残留的 lock / token 会让下次启动误判
+    Remove-Item (Join-Path $HOME ".rcc\server.lock") -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $HOME ".rcc\local.token") -ErrorAction SilentlyContinue
     Write-Host "Stopped."
 }
 

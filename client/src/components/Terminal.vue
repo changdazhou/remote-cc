@@ -35,16 +35,16 @@
       <div class="mobile-copy-toolbar">
         <button
           class="mobile-copy-action"
-          title="Copy selected text"
-          aria-label="Copy selected text"
+          :title="t.term_copy_selection"
+          :aria-label="t.term_copy_selection"
           @click.stop="copyMobileText"
         >
           <AppIcon name="copy" />
         </button>
         <button
           class="mobile-copy-action"
-          title="Close"
-          aria-label="Close"
+          :title="t.term_close"
+          :aria-label="t.term_close"
           @click.stop="closeMobileCopyMode"
         >
           <AppIcon name="close" />
@@ -63,8 +63,8 @@
     <button
       v-if="isMobileUi && terminalSelection"
       class="mobile-selection-copy"
-      title="Copy selected text"
-      aria-label="Copy selected text"
+      :title="t.term_copy_selection"
+      :aria-label="t.term_copy_selection"
       @click.stop="copyTerminalSelection"
     >
       <AppIcon name="copy" />
@@ -74,11 +74,11 @@
       v-if="scrolledAway && !mobileCopyMode"
       class="jump-bottom-btn"
       :class="{ 'has-new': hasNewOutput }"
-      title="回到底部"
+      :title="t.term_jump_bottom"
       @click.stop="jumpToBottom"
     >
       <AppIcon name="chevron" />
-      <span v-if="hasNewOutput">新输出</span>
+      <span v-if="hasNewOutput">{{ t.term_new_output }}</span>
     </button>
 
     <button
@@ -98,13 +98,13 @@
         <AppIcon name="spinner" spin />
         <span class="iup-name" :title="termUpload.name">{{ termUpload.name }}</span>
         <span>{{ termUpload.percent }}%{{ termUpload.queued ? ` +${termUpload.queued}` : '' }}</span>
-        <button class="iup-cancel" title="取消上传" @click.stop="cancelTerminalUpload"><AppIcon name="close" /></button>
+        <button class="iup-cancel" :title="t.term_cancel_upload" @click.stop="cancelTerminalUpload"><AppIcon name="close" /></button>
       </div>
       <div class="iup-track"><div class="iup-bar" :style="{ width: termUpload.percent + '%' }"></div></div>
       <div class="iup-detail">
         <span>{{ formatBytes(termUpload.loaded) }} / {{ formatBytes(termUpload.size) }}</span>
-        <span v-if="termUpload.size && termUpload.loaded >= termUpload.size">服务器处理中…</span>
-        <span v-else-if="termUpload.speed > 0">{{ formatBytes(termUpload.speed) }}/s · 剩余 {{ formatDuration(termUpload.eta) }}</span>
+        <span v-if="termUpload.size && termUpload.loaded >= termUpload.size">{{ t.term_server_processing }}</span>
+        <span v-else-if="termUpload.speed > 0">{{ formatBytes(termUpload.speed) }}/s · {{ t.term_remaining.replace('{eta}', formatDuration(termUpload.eta)) }}</span>
       </div>
     </div>
     <span v-else-if="uploadHint.text" class="img-path-hint" :class="{ error: uploadHint.error }" :title="uploadHint.title">
@@ -126,7 +126,7 @@
         <label
           class="img-upload-btn"
           :class="{ uploading }"
-          :title="uploading ? '上传中...' : '上传图片或文件'"
+          :title="uploading ? t.term_uploading : t.term_upload_title"
           @click.stop
         >
           <input type="file" accept="image/*,*/*" multiple style="display:none"
@@ -141,13 +141,13 @@
         @click="ctxMenu.show = false"
         @contextmenu.prevent="ctxMenu.show = false">
         <div class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
-          <button class="ctx-item" @click="ctxCopy"><AppIcon name="copy" class="ctx-icon" /> Copy <span class="ctx-kbd">Ctrl+Shift+C</span></button>
+          <button class="ctx-item" @click="ctxCopy"><AppIcon name="copy" class="ctx-icon" /> {{ t.ctx_copy }} <span class="ctx-kbd">Ctrl+Shift+C</span></button>
           <!-- Paste：点击后聚焦隐藏 input，让用户用 Ctrl+V 粘贴 -->
-          <button class="ctx-item" @click="ctxPasteClick"><AppIcon name="paste" class="ctx-icon" /> Paste <span class="ctx-kbd">Ctrl+Shift+V</span></button>
+          <button class="ctx-item" @click="ctxPasteClick"><AppIcon name="paste" class="ctx-icon" /> {{ t.ctx_paste }} <span class="ctx-kbd">Ctrl+Shift+V</span></button>
           <div class="ctx-divider"></div>
-          <button v-if="isMobileUi" class="ctx-item" @click="ctxTextSelect"><AppIcon name="select-all" class="ctx-icon" /> Text Select</button>
-          <button class="ctx-item" @click="ctxSelectAll"><AppIcon name="select-all" class="ctx-icon" /> Select All</button>
-          <button class="ctx-item" @click="ctxClear"><AppIcon name="clear" class="ctx-icon" /> Clear</button>
+          <button v-if="isMobileUi" class="ctx-item" @click="ctxTextSelect"><AppIcon name="select-all" class="ctx-icon" /> {{ t.ctx_text_select }}</button>
+          <button class="ctx-item" @click="ctxSelectAll"><AppIcon name="select-all" class="ctx-icon" /> {{ t.ctx_select_all }}</button>
+          <button class="ctx-item" @click="ctxClear"><AppIcon name="clear" class="ctx-icon" /> {{ t.ctx_clear }}</button>
         </div>
       </div>
       <!-- 隐藏 input 用于接收系统粘贴事件 -->
@@ -172,6 +172,7 @@ import { api, formatBytes, formatDuration } from '../api/index.js';
 import { THEMES } from '../themes.js';
 import { settings, FONT_FAMILIES } from '../settings.js';
 import { recentlyActive } from '../user-activity.js';
+import { useI18n } from '../i18n.js';
 
 const props = defineProps({
   theme: { type: String, default: 'cyber' },
@@ -179,6 +180,7 @@ const props = defineProps({
   optimisticEcho: { type: Boolean, default: false },
 });
 const emit = defineEmits(['input', 'resize', 'paste', 'response']);
+const { t } = useI18n();
 
 const termRef = ref(null);
 const wrapRef = ref(null);
@@ -296,8 +298,8 @@ async function drainUploadQueue() {
         setUploadHint(shortPath(filePath), { title: filePath, autoHideMs: 8000 });
         emit('input', filePath + ' ');
       } catch (e) {
-        if (abort.signal.aborted) setUploadHint('已取消上传', { autoHideMs: 3000 });
-        else setUploadHint(`上传失败: ${label} (${e?.message || e})`, { error: true, autoHideMs: 8000 });
+        if (abort.signal.aborted) setUploadHint(t.value.term_upload_cancelled, { autoHideMs: 3000 });
+        else setUploadHint(t.value.term_upload_failed.replace('{name}', label).replace('{msg}', e?.message || e), { error: true, autoHideMs: 8000 });
       }
     }
   } finally {
@@ -348,7 +350,7 @@ function handleClipboardPaste(e) {
     awaitingPaste = false;
     e.preventDefault();
     resumeOutputForInput();
-    emit('paste', text);
+    emit('paste', preparePasteText(text));
     return true;
   }
   return false;
@@ -802,8 +804,9 @@ function smartWrite(data, options = {}) {
   if (mobileCopyMode.value || userScrolled || selectionHold) {
     pendingWrites.push(item);
     pendingBytes += output.length;
-    // 缓存过多时不能丢弃中间片段（会打乱终端控制序列），直接恢复跟随并全部写入
-    if (pendingBytes > PENDING_MAX_BYTES && !mobileCopyMode.value) {
+    // 缓存过多时不能丢弃中间片段（会打乱终端控制序列），直接恢复跟随并全部写入。
+    // 手机复制模式显示的是打开时的静态快照，底下照常写入不影响复制，同样要封顶，否则长时间开着会无限增长
+    if (pendingBytes > PENDING_MAX_BYTES) {
       setSelectionHold(false);
       setUserScrolled(false);
       flushPending();
@@ -1206,11 +1209,17 @@ onBeforeUnmount(() => {
   stopInertia();
   disableWebgl();
   selectionDisposable?.dispose();
+  if (scrollBackNudgeRaf) cancelAnimationFrame(scrollBackNudgeRaf);
+  scrollBackNudgeRaf = 0;
   term?.dispose();
+  // 置空后，卸载后才触发的 rAF / 字体加载回调都会因 term 为空直接返回，不再操作已销毁的实例
+  term = null;
+  fitAddon = null;
 });
 
 function scheduleFontRemeasure() {
   clearTimeout(fontRemeasureTimer);
+  if (!term) return;
   fontRemeasureTimer = setTimeout(() => remeasureFont(), 50);
 }
 
@@ -1250,12 +1259,13 @@ function jumpToBottom() {
   scrollToBottomSoon();
   if (!isMobileViewport()) focusTerm();
 }
-function clear() {
+function clear({ reset = false } = {}) {
   setSelectionHold(false);
   pendingWrites.splice(0);
   pendingBytes = 0;
   resetOptimisticEcho();
-  term?.clear();
+  if (reset) term?.reset();
+  else term?.clear();
 }
 
 // 供外部（SymbolBar 通过 App）同步更新行追踪，保持与键盘输入相同的逻辑
@@ -1346,9 +1356,18 @@ function applyMobileModifier(data) {
   return data;
 }
 
+// 与 xterm 自带粘贴保持一致：换行统一成 \r，程序开启 bracketed paste（DECSET 2004）时加上首尾标记，
+// 否则 Agent 无法区分多行粘贴和逐行回车，可能边粘贴边提交
+function preparePasteText(text) {
+  const normalized = String(text).replace(/\r?\n/g, '\r');
+  return term?.modes?.bracketedPasteMode ? `\x1b[200~${normalized}\x1b[201~` : normalized;
+}
+
 function emitMobileInput(data) {
   if (!data) return;
   const input = applyMobileModifier(data);
+  // 先把上划期间缓存的输出写出去再本地回显，否则字符会画在旧光标位置（键盘路径同样先 resume）
+  resumeOutputForInput();
   echoLocalInput(input);
   emit('input', input);
   nextTick(() => focusMobileInput());
@@ -1404,7 +1423,7 @@ function onMobilePaste(e) {
   if (!text) return;
   e.preventDefault();
   e.target.value = '';
-  emitMobileInput(text);
+  emitMobileInput(preparePasteText(text));
 }
 
 // ── 复制工具函数（兼容 HTTP 非安全上下文） ───────────────────────────────────
@@ -1434,8 +1453,8 @@ function showCopyHint(text, { pending = '', ok = false, ms = COPY_HINT_MS } = {}
 
 function copyFromAgent(text) {
   copyText(text).then(ok => {
-    if (ok) showCopyHint(`已复制 ${text.length} 个字符`, { ok: true, ms: 1500 });
-    else showCopyHint(`Agent 请求复制 ${text.length} 个字符，点击复制`, { pending: text });
+    if (ok) showCopyHint(t.value.term_copied.replace('{n}', text.length), { ok: true, ms: 1500 });
+    else showCopyHint(t.value.term_copy_pending.replace('{n}', text.length), { pending: text });
   });
 }
 
@@ -1445,14 +1464,14 @@ function onCopyHintClick() {
   // 必须在点击事件里同步调用，不能等 Promise，否则又失去用户操作的有效期
   const ok = fallbackCopy(text);
   if (ok) {
-    showCopyHint(`已复制 ${text.length} 个字符`, { ok: true, ms: 1500 });
+    showCopyHint(t.value.term_copied.replace('{n}', text.length), { ok: true, ms: 1500 });
   } else if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(text).then(
-      () => showCopyHint(`已复制 ${text.length} 个字符`, { ok: true, ms: 1500 }),
-      () => showCopyHint('浏览器拒绝写入剪贴板', { ms: 3000 }),
+      () => showCopyHint(t.value.term_copied.replace('{n}', text.length), { ok: true, ms: 1500 }),
+      () => showCopyHint(t.value.term_clipboard_denied, { ms: 3000 }),
     );
   } else {
-    showCopyHint('浏览器拒绝写入剪贴板', { ms: 3000 });
+    showCopyHint(t.value.term_clipboard_denied, { ms: 3000 });
   }
   nextTick(() => focusTerm());
 }
@@ -1609,7 +1628,7 @@ function doPaste() {
       .then(text => {
         if (text) {
           resumeOutputForInput();
-          emit('paste', text);
+          emit('paste', preparePasteText(text));
         }
       })
       .catch(() => {
@@ -1680,7 +1699,7 @@ function ctxPasteClick() {
       .then(text => {
         if (text) {
           resumeOutputForInput();
-          emit('paste', text);
+          emit('paste', preparePasteText(text));
         }
       })
       .catch(() => {

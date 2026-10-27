@@ -1,2 +1,2 @@
 @echo off
-node "%~dp0rcc" %*
+node "%~dp0remotecc" %*

@@ -533,7 +533,7 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId, agent, e
       if (!upgraded) {
         const s = chunk.toString('binary'), idx = s.indexOf('\r\n\r\n');
         if (idx === -1) return;
-        if (!s.includes('101')) { sock.destroy(); reject(new Error(L('WS 握手失败', 'WebSocket handshake failed'))); return; }
+        if (!/^HTTP\/1\.[01] 101\b/.test(s)) { sock.destroy(); reject(new Error(L('WS 握手失败', 'WebSocket handshake failed'))); return; }
         upgraded = true;
         const rest = chunk.slice(Buffer.from(s.slice(0, idx + 4), 'binary').length);
         if (rest.length) binBuf = Buffer.concat([binBuf, rest]);
@@ -572,6 +572,19 @@ function wsCreate(host, port, token, workingDir, name, resumeSessionId, agent, e
 // 逃逸键：Ctrl+] (ASCII 29, \x1d) — 历史上 telnet 的断开键
 // 在 socket 层拦截，不传给 PTY，触发断开回菜单
 const ESCAPE_KEY = '\x1d';
+
+function discardPendingInput(done) {
+  if (!process.stdin.isTTY) { done(); return; }
+  const sink = () => {};
+  try { process.stdin.setRawMode(true); } catch (_) {}
+  process.stdin.on('data', sink);
+  process.stdin.resume();
+  setTimeout(() => {
+    process.stdin.removeListener('data', sink);
+    try { process.stdin.setRawMode(false); } catch (_) {}
+    done();
+  }, 60);
+}
 
 function doAttach(sp, sname, onDetach, sessionId) {
   wr(A.show + '\n' + A.cyan + L('  已接入 ', '  Attached to ') + A.b + sname + A.R +
@@ -625,7 +638,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
 
     if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
     // stdin 先保持 paused，由下一个 menu() 恢复读取
-    process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
+    process.stdout.write(RESET_TERM_MODES + '\r\n');
 
     const msg = fromEscape
       ? A.cyan + L('[已断开]', '[detached]') + A.R
@@ -636,9 +649,12 @@ function doAttach(sp, sname, onDetach, sessionId) {
     const delay = fromEscape ? 300 : 6000;
     setTimeout(() => {
       process.stdin.removeAllListeners('keypress');
-      // pause 确保不在 flowing 模式，menu() 的 setRawMode+on(keypress) 能正常工作
-      process.stdin.pause();
-      onDetach();
+      // 等待期间用户敲的键（常见是连按回车）还留在 tty 缓冲里，不丢掉会被下一个菜单当作选择
+      discardPendingInput(() => {
+        // pause 确保不在 flowing 模式，menu() 的 setRawMode+on(keypress) 能正常工作
+        process.stdin.pause();
+        onDetach();
+      });
     }, delay);
   };
 
@@ -652,7 +668,7 @@ function doAttach(sp, sname, onDetach, sessionId) {
       if (!sock.destroyed) try { sock.destroy(); } catch (_) {}
       process.stdout.removeListener('resize', sendResize);
       if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
-      process.stdout.write('\x1b[?1049l\x1b[?25h\x1b[0m\r\n');
+      process.stdout.write(RESET_TERM_MODES + '\r\n');
       wr(A.red + L('[服务已停止，rcc-tui 退出]', '[service stopped, rcc-tui exiting]') + A.R + '\n');
       process.exit(0);
     }
@@ -940,7 +956,8 @@ function sendControlMsg(info, msg) {
     sock.on('data', chunk => {
       if (!upgraded) {
         const s = chunk.toString('binary');
-        if (!s.includes('101')) { sock.destroy(); resolve(false); return; }
+        // 只认握手状态行，避免 401 响应体里恰好含 "101" 时误判为连接成功
+        if (!/^HTTP\/1\.[01] 101\b/.test(s)) { done = true; clearTimeout(timer); sock.destroy(); resolve(false); return; }
         upgraded = true;
         sock.write(wsMask(JSON.stringify(msg)));
         setTimeout(() => { if (!done) { done = true; clearTimeout(timer); sock.destroy(); resolve(true); } }, 500);
@@ -1105,6 +1122,11 @@ async function doCreate(info, workingDir, name, resumeSessionId, agent = 'claude
   }
 }
 
+// 断开时关闭 Agent 可能打开的终端模式（bracketed paste、焦点事件、鼠标跟踪、应用光标键、kitty 键盘协议），
+// 否则回到菜单后鼠标点击会打出乱码、Esc/Ctrl+C 变成菜单解析不了的序列
+const RESET_TERM_MODES = '\x1b[?2004l\x1b[?1004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1l\x1b>\x1b[<u'
+  + '\x1b[?1049l\x1b[?25h\x1b[0m';
+
 // ── 日志 ──────────────────────────────────────────────────────────────────────
 async function doTail(s, follow = true) {
   if (!s.logPath || !fs.existsSync(s.logPath)) {
@@ -1120,7 +1142,33 @@ async function doTail(s, follow = true) {
     const proc = spawn('tail', args, { stdio: ['ignore', 'inherit', 'inherit'] });
     const onSig = () => { proc.kill(); resolve(); };
     process.once('SIGINT', onSig);
-    proc.on('close', () => { process.removeListener('SIGINT', onSig); resolve(); });
+    // tail 不存在时只有 error、没有 close，不监听会抛未捕获异常把 TUI 打崩
+    proc.on('error', e => {
+      process.removeListener('SIGINT', onSig);
+      notice('tail: ' + e.message, A.red, 1800).then(resolve);
+    });
+    proc.on('close', () => {
+      process.removeListener('SIGINT', onSig);
+      // 非跟随模式 tail 会立即退出，紧接着菜单的整屏重置会把刚输出的日志冲掉，先等用户按键
+      if (follow) resolve();
+      else waitAnyKey().then(resolve);
+    });
+  });
+}
+
+function waitAnyKey() {
+  return new Promise(resolve => {
+    wr(A.show + '\n  ' + A.gray + L('按任意键返回菜单', 'Press any key to return to the menu') + A.R);
+    const onKey = () => {
+      process.stdin.removeListener('keypress', onKey);
+      if (process.stdin.isTTY) try { process.stdin.setRawMode(false); } catch (_) {}
+      process.stdin.pause();
+      resolve();
+    };
+    process.stdin.removeAllListeners('keypress');
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.on('keypress', onKey);
+    process.stdin.resume();
   });
 }
 
@@ -1133,6 +1181,13 @@ if (!process.stdin.isTTY) {
 process.on('exit', () => {
   try { if (process.stdin.isTTY) process.stdin.setRawMode(false); wr(A.show); } catch (_) {}
 });
+// 被 kill / 终端关闭时也要恢复终端模式（接入会话时 Agent 可能开了鼠标上报、备用屏等），否则留下一个错乱的 shell
+for (const sig of ['SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => {
+    try { process.stdout.write(RESET_TERM_MODES); } catch (_) {}
+    process.exit(128 + (require('os').constants.signals[sig] || 1));
+  });
+}
 
 // ── 命令行参数处理 ────────────────────────────────────────────────────────────
 // rcc-tui --attach <name|id>  直接接入指定会话
@@ -1144,11 +1199,17 @@ const attachArg = (() => {
 async function startTui() {
   if (attachArg) {
     const meta = loadMeta();
-    const s = meta.find(m =>
-      m.name === attachArg ||
-      m.sessionId === attachArg ||
-      m.sessionId.startsWith(attachArg)
-    );
+    // 精确 ID > 精确名称 > ID 前缀；前缀命中多个时不随便挑一个
+    const byName = meta.filter(m => m.name === attachArg);
+    const matches = meta.filter(m => m.sessionId === attachArg).length
+      ? meta.filter(m => m.sessionId === attachArg)
+      : (byName.length ? byName : meta.filter(m => m.sessionId.startsWith(attachArg)));
+    if (matches.length > 1) {
+      wr(A.clear);
+      await notice(L(`有 ${matches.length} 个会话匹配 "${attachArg}"，请在列表中选择`, `${matches.length} sessions match "${attachArg}"; pick one from the list`), A.yellow, 2200);
+      return pageMain();
+    }
+    const s = matches[0];
     if (s && s.alive && sockAlive(s.sessionId)) {
       doAttach(sockPath(s.sessionId), s.name, returnToMainAfterDetach, s.sessionId);
       return;

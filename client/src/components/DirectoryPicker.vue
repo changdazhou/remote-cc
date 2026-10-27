@@ -17,56 +17,60 @@
         spellcheck="false"
         @keyup.enter="loadDir(pathInput)"
       />
-      <label class="dp-hidden" title="显示隐藏目录">
+      <label class="dp-hidden" :title="t.dp_show_hidden_title">
         <input type="checkbox" v-model="showHidden" @change="loadDir(currentPath)" />
-        <span>隐藏</span>
+        <span>{{ t.dp_hidden }}</span>
       </label>
       <div class="dp-create">
         <input
           v-model="newDirName"
           class="dp-create-input"
-          placeholder="新建目录"
+          :placeholder="t.dp_new_dir"
           spellcheck="false"
           @keyup.enter="createDir"
         />
         <button
           class="dp-create-btn"
           :disabled="creating || !newDirName.trim()"
-          title="新建目录"
+          :title="t.dp_new_dir"
           @click="createDir"
         >
           <AppIcon v-if="creating" name="spinner" spin />
           <AppIcon v-else name="folder-plus" />
         </button>
       </div>
-      <button class="dp-select" @click="selectPath(selectedPath || currentPath)">选择当前</button>
-      <button class="dp-close" title="关闭" @click="$emit('cancel')"><AppIcon name="close" /></button>
+      <button class="dp-select" @click="selectPath(selectedPath || currentPath)">{{ t.dp_select_current }}</button>
+      <button class="dp-close" :title="t.dp_close" @click="$emit('cancel')"><AppIcon name="close" /></button>
     </div>
 
     <div class="dp-body">
-      <div v-if="loading" class="dp-status">加载中…</div>
+      <div v-if="loading" class="dp-status">{{ t.dp_loading }}</div>
       <div v-else-if="error" class="dp-status dp-error">{{ error }}</div>
       <template v-else>
         <button v-if="parentPath" class="dp-row dp-parent" @click="loadDir(parentPath)">
           <span class="dp-icon"><AppIcon name="parent" /></span>
           <span class="dp-name">..</span>
         </button>
-        <button
+        <!-- 行本身不能是 <button>：内部的打开/选择按钮需要能单独获得键盘焦点 -->
+        <div
           v-for="entry in dirs"
           :key="entry.name"
           class="dp-row"
           :class="{ active: fullPath(entry) === selectedPath }"
+          role="button" tabindex="0"
           @click="selectedPath = fullPath(entry)"
           @dblclick="loadDir(fullPath(entry))"
+          @keydown.enter.self.prevent="loadDir(fullPath(entry))"
+          @keydown.space.self.prevent="selectedPath = fullPath(entry)"
         >
           <span class="dp-icon"><AppIcon name="folder" /></span>
           <span class="dp-name">{{ entry.name }}</span>
           <span class="dp-actions">
-            <span class="dp-action" @click.stop="loadDir(fullPath(entry))">打开</span>
-            <span class="dp-action primary" @click.stop="selectPath(fullPath(entry))">选择</span>
+            <button type="button" class="dp-action" @click.stop="loadDir(fullPath(entry))" @dblclick.stop>{{ t.dp_open }}</button>
+            <button type="button" class="dp-action primary" @click.stop="selectPath(fullPath(entry))" @dblclick.stop>{{ t.dp_select }}</button>
           </span>
-        </button>
-        <div v-if="!dirs.length && !parentPath" class="dp-status">无目录</div>
+        </div>
+        <div v-if="!dirs.length && !parentPath" class="dp-status">{{ t.dp_no_dirs }}</div>
       </template>
     </div>
   </div>
@@ -76,11 +80,13 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { api } from '../api/index.js';
 import AppIcon from './AppIcon.vue';
+import { useI18n } from '../i18n.js';
 
 const props = defineProps({
   initialPath: { type: String, default: '/' },
 });
 const emit = defineEmits(['select', 'cancel']);
+const { t } = useI18n();
 
 const currentPath = ref('');
 const pathInput = ref('');
@@ -119,19 +125,23 @@ function fullPath(entry) {
   return `${currentPath.value.replace(/\/+$/, '')}/${entry.name}`;
 }
 
+// 连续切换目录时，晚到的旧响应不能覆盖当前目录（否则上传等操作会落到错误目录）
+let dirToken = 0;
 async function loadDir(path) {
   loading.value = true;
   error.value = '';
+  const tok = ++dirToken;
   try {
     const res = await api.fs.list(path || '/', showHidden.value);
+    if (tok !== dirToken) return;
     currentPath.value = res.path;
     pathInput.value = res.path;
     selectedPath.value = res.path;
     entries.value = res.entries;
   } catch (e) {
-    error.value = e.message || '加载失败';
+    if (tok === dirToken) error.value = e.message || t.value.dp_load_failed;
   } finally {
-    loading.value = false;
+    if (tok === dirToken) loading.value = false;
   }
 }
 
@@ -147,7 +157,7 @@ async function createDir() {
     await loadDir(nextPath);
     selectedPath.value = nextPath;
   } catch (e) {
-    error.value = e.message || '创建失败';
+    error.value = e.message || t.value.dp_create_failed;
   } finally {
     creating.value = false;
   }
@@ -305,10 +315,16 @@ watch(() => props.initialPath, path => {
   flex-shrink: 0; opacity: 0;
 }
 .dp-row:hover .dp-actions,
-.dp-row.active .dp-actions { opacity: 1; }
+.dp-row.active .dp-actions,
+.dp-row:focus-within .dp-actions { opacity: 1; }
+.dp-row:focus-visible { outline: 1px solid var(--border-strong); outline-offset: -1px; }
 .dp-action {
+  background: none; border: none; cursor: pointer;
+  font-family: inherit; padding: 2px 3px; border-radius: var(--radius-sm);
   color: var(--muted); font-size: 10px;
 }
+.dp-action:hover,
+.dp-action:focus-visible { color: var(--text); outline: none; background: color-mix(in srgb, var(--neon) 10%, transparent); }
 .dp-action.primary { color: var(--neon); }
 .dp-status {
   padding: 16px 10px;

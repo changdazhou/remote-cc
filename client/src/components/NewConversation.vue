@@ -35,7 +35,7 @@
             spellcheck="false" autocorrect="off" autocapitalize="off"
             @keydown.enter="onEnterKey($event, start)"
           />
-          <button class="nc-browse-btn" :class="{ active: dirPickerOpen }" title="选择目录" @click="toggleDirPicker">
+          <button class="nc-browse-btn" :class="{ active: dirPickerOpen }" :title="t.nc_pick_dir" :aria-label="t.nc_pick_dir" @click="toggleDirPicker">
             <AppIcon name="folder" />
           </button>
         </div>
@@ -109,7 +109,7 @@
           class="nc-proj"
         >
           <!-- Project header -->
-          <div class="nc-proj-hdr" @click="toggleProj(proj.id)">
+          <div class="nc-proj-hdr" role="button" tabindex="0" :aria-expanded="expanded.has(proj.id)" @click="toggleProj(proj.id)" @keydown.enter.space.self.prevent="toggleProj(proj.id)">
             <span class="nc-proj-path">{{ proj.displayPath || proj.id }}</span>
             <span class="nc-proj-count">{{ proj.sessionCount }}</span>
             <AppIcon name="chevron" class="nc-chevron" :class="{ open: expanded.has(proj.id) }" />
@@ -117,14 +117,16 @@
 
           <!-- Sessions list -->
           <template v-if="expanded.has(proj.id)">
-            <div v-if="loadingProj.has(proj.id)" class="nc-sess-loading">Loading…</div>
+            <div v-if="loadingProj.has(proj.id)" class="nc-sess-loading">{{ t.nc_loading }}</div>
             <div
               v-else
               v-for="sess in (projSessions[proj.id] || [])"
               :key="sess.sessionId"
               class="nc-sess"
               :class="{ selected: selectedSess?.sessionId === sess.sessionId }"
+              role="button" tabindex="0"
               @click="selectSess(sess, proj)"
+              @keydown.enter.space.self.prevent="selectSess(sess, proj)"
             >
               <div class="nc-sess-preview">{{ sess.lastMessage || t.no_preview }}</div>
               <div class="nc-sess-meta">
@@ -199,7 +201,7 @@ async function refreshAgents() {
       loadHistory();
     }
   } catch (_) {
-    agentStatuses.value = [];
+    // 偶发失败保留上次结果，不清空列表（否则"开始"按钮会被短暂禁用）
   } finally {
     agentLoading.value = false;
   }
@@ -207,7 +209,8 @@ async function refreshAgents() {
 
 onMounted(() => {
   refreshAgents();
-  agentRefreshTimer = setInterval(refreshAgents, 15000);
+  // 页面在后台时跳过轮询
+  agentRefreshTimer = setInterval(() => { if (!document.hidden) refreshAgents(); }, 15000);
 });
 
 onBeforeUnmount(() => {
@@ -244,7 +247,8 @@ function shortPath(p) {
 const argsByAgent = reactive({});
 const extraArgs = computed({
   get: () => argsByAgent[agent.value] || '',
-  set: (value) => { argsByAgent[agent.value] = value; },
+  // iOS/macOS 的智能标点会把连续输入的 "--" 替换成破折号 "—"，参数里不会用到破折号，还原回去
+  set: (value) => { argsByAgent[agent.value] = value.replace(/[–—]/g, '--'); },
 });
 const ARGS_PLACEHOLDERS = {
   claude: '--model opus',
@@ -295,6 +299,8 @@ const selectedSess = ref(null);
 const selectedProj = ref(null);
 const resumeName   = ref('');
 let histLoaded = false;
+// 每次重置/重新加载递增；切换 Agent 时旧请求的结果晚到，按序号丢弃，避免把上一个 Agent 的历史显示到当前 Agent 下
+let histReq = 0;
 
 function setAgent(nextAgent) {
   if (agent.value === nextAgent) return;
@@ -305,19 +311,22 @@ function setAgent(nextAgent) {
 
 async function loadHistory(force = false) {
   if (histLoaded && !force) return;
-  if (histLoading.value) return;
+  if (histLoading.value && !force) return;
   if (force) resetHistoryState();
+  const req = ++histReq;
+  const reqAgent = agent.value;
   histLoading.value = true;
   histError.value = '';
   try {
-    const loadedProjects = await api.getProjects(agent.value);
+    const loadedProjects = await api.getProjects(reqAgent);
+    if (req !== histReq) return;
     projects.value = loadedProjects;
     histLoaded = true;
-    if (agent.value === 'codex' || agent.value === 'grok') await preloadAllSessions(loadedProjects);
+    if (reqAgent === 'codex' || reqAgent === 'grok') await preloadAllSessions(loadedProjects, req, reqAgent);
   } catch (e) {
-    histError.value = e.message;
+    if (req === histReq) histError.value = e.message;
   } finally {
-    histLoading.value = false;
+    if (req === histReq) histLoading.value = false;
   }
 }
 
@@ -329,6 +338,8 @@ function resetHistoryState() {
   selectedSess.value = null;
   selectedProj.value = null;
   histLoaded = false;
+  histLoading.value = false;
+  histReq++;
 }
 
 function openResume() {
@@ -351,24 +362,27 @@ async function toggleProj(id) {
 
 async function ensureProjLoaded(id) {
   if (projSessions[id]) return;
+  const req = histReq;
   loadingProj.add(id);
   try {
-    projSessions[id] = await api.getSessions(id, agent.value);
+    const sessions = await api.getSessions(id, agent.value);
+    if (req === histReq) projSessions[id] = sessions;
   } catch (_) {
-    projSessions[id] = [];
+    if (req === histReq) projSessions[id] = [];
   } finally {
-    loadingProj.delete(id);
+    if (req === histReq) loadingProj.delete(id);
   }
 }
 
-async function preloadAllSessions(projectList) {
+async function preloadAllSessions(projectList, req, reqAgent) {
   if (!projectList.length) return;
   for (const proj of projectList) {
     expanded.add(proj.id);
     loadingProj.add(proj.id);
   }
   try {
-    const sessions = await api.getSessions(agent.value, agent.value);
+    const sessions = await api.getSessions(reqAgent, reqAgent);
+    if (req !== histReq) return;
     const byProject = Object.fromEntries(projectList.map(proj => [proj.id, []]));
     for (const sess of sessions) {
       if (!byProject[sess.projectId]) byProject[sess.projectId] = [];
@@ -378,9 +392,9 @@ async function preloadAllSessions(projectList) {
       projSessions[projectId] = sessionsInProject;
     }
   } catch (_) {
-    for (const proj of projectList) projSessions[proj.id] = [];
+    if (req === histReq) for (const proj of projectList) projSessions[proj.id] = [];
   } finally {
-    for (const proj of projectList) loadingProj.delete(proj.id);
+    if (req === histReq) for (const proj of projectList) loadingProj.delete(proj.id);
   }
 }
 
@@ -416,8 +430,8 @@ function fmtDate(iso) {
   const d = new Date(iso);
   const now = Date.now();
   const diff = now - d.getTime();
-  if (diff < 86400000) return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+  if (diff < 86400000) return d.toLocaleTimeString(settings.language === 'en' ? 'en-US' : 'zh-CN', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString(settings.language === 'en' ? 'en-US' : 'zh-CN', { month: '2-digit', day: '2-digit' });
 }
 </script>
 

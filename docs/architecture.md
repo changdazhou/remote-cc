@@ -21,7 +21,7 @@
 │  - WS/HTTP 回退 + PTY 管理（pty-manager）                │
 │  - 热重载：SIGUSR2 → 重启 app.js，不断 WS/PTY           │
 └──────────────────────┬──────────────────────────────────┘
-                       │ Unix Socket (/tmp/rcc-app.sock)
+                       │ Unix Socket (~/.rcc/app.sock)
 ┌──────────────────────▼──────────────────────────────────┐
 │               app.js（可热重启的业务层）                  │
 │  - REST API（projects/sessions/fs/upload）              │
@@ -131,7 +131,7 @@ PTY 输出
 │  - WS/HTTP fallback + PTY management (pty-manager)      │
 │  - Hot reload: SIGUSR2 → restart app.js, no WS/PTY drop │
 └──────────────────────┬──────────────────────────────────┘
-                       │ Unix Socket (/tmp/rcc-app.sock)
+                       │ Unix Socket (~/.rcc/app.sock)
 ┌──────────────────────▼──────────────────────────────────┐
 │               app.js (hot-reloadable business layer)     │
 │  - REST API (projects/sessions/fs/upload)               │

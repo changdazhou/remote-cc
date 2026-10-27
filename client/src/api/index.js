@@ -1,3 +1,5 @@
+import { t } from '../i18n.js';
+
 const BASE = '';
 
 function getToken() { return localStorage.getItem('rcc_token') || ''; }
@@ -42,7 +44,11 @@ export async function login(username, password) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
   });
-  if (!res.ok) throw new Error('Invalid credentials');
+  if (!res.ok) {
+    const err = new Error('Invalid credentials');
+    err.status = res.status;
+    throw err;
+  }
   const { token } = await res.json();
   setToken(token);
   saveUsername(username);
@@ -136,8 +142,24 @@ function uploadFilenameHeaders(file) {
  * 用 XHR 直接发送 File/Blob：浏览器从磁盘流式读取，不会把整个文件读进内存，
  * 同时可以拿到上传进度。onProgress(loaded, total)
  */
+// HTTP 回退的 input 请求体服务端限制 64KB；大段粘贴（尤其含大量控制字符，JSON 转义后会膨胀到 6 倍）要拆块发送。
+// 按码点切分，避免把代理对拆成两半
+const HTTP_INPUT_CHUNK = 8 * 1024;
+export function splitInputChunks(data) {
+  if (!data || data.length <= HTTP_INPUT_CHUNK) return data ? [data] : [];
+  const out = [];
+  let i = 0;
+  while (i < data.length) {
+    let end = Math.min(i + HTTP_INPUT_CHUNK, data.length);
+    const code = data.charCodeAt(end - 1);
+    if (end < data.length && code >= 0xd800 && code <= 0xdbff) end--;
+    out.push(data.slice(i, end));
+    i = end;
+  }
+  return out;
+}
+
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024;
-const UPLOAD_LIMIT_MESSAGE = '文件超过 10 GB 上传上限';
 
 export function formatBytes(bytes) {
   if (bytes == null || bytes === '' || !Number.isFinite(Number(bytes))) return '';
@@ -153,9 +175,9 @@ export function formatBytes(bytes) {
 export function formatDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return '';
   const s = Math.ceil(seconds);
-  if (s < 60) return `${s}秒`;
-  if (s < 3600) return `${Math.floor(s / 60)}分${String(s % 60).padStart(2, '0')}秒`;
-  return `${Math.floor(s / 3600)}小时${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}分`;
+  if (s < 60) return t('dur_sec').replace('{n}', s);
+  if (s < 3600) return t('dur_min').replace('{m}', Math.floor(s / 60)).replace('{s}', String(s % 60).padStart(2, '0'));
+  return t('dur_hour').replace('{h}', Math.floor(s / 3600)).replace('{m}', String(Math.floor(s % 3600 / 60)).padStart(2, '0'));
 }
 
 // 最近几秒的平均速度，避免瞬时速度跳动
@@ -173,7 +195,7 @@ function createSpeedMeter(windowMs = 3000) {
 function uploadWithProgress(url, file, { onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
     if (file.size > MAX_UPLOAD_BYTES) {
-      reject(apiError(UPLOAD_LIMIT_MESSAGE, 413));
+      reject(apiError(t('up_too_large'), 413));
       return;
     }
     const xhr = new XMLHttpRequest();
@@ -201,8 +223,8 @@ function uploadWithProgress(url, file, { onProgress, signal } = {}) {
       } else if (xhr.status >= 200 && xhr.status < 300) {
         resolve(data);
       } else {
-        const message = xhr.status === 413 ? UPLOAD_LIMIT_MESSAGE
-          : xhr.status === 507 ? '服务器磁盘空间不足'
+        const message = xhr.status === 413 ? t('up_too_large')
+          : xhr.status === 507 ? t('up_disk_full')
           : (data?.error || `HTTP ${xhr.status}`);
         reject(apiError(message, xhr.status));
       }

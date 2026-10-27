@@ -12,6 +12,7 @@ const messages = {
     login_btn:      '登 录',
     login_loading:  '登录中...',
     login_error:    '用户名或密码错误',
+    login_throttled: '失败次数过多，请 10 分钟后再试',
 
     // 顶栏
     new_conv:       '新建对话',
@@ -71,6 +72,7 @@ const messages = {
     shell_status_connected: '已连接',
     shell_status_reconnecting: '重连中',
     shell_status_closed: '已断开',
+    shell_exited_hint: '[终端已退出，按回车重新启动]',
     shell_status_error: '连接错误',
     shell_status_reconnected: '终端已恢复连接',
 
@@ -163,6 +165,114 @@ const messages = {
     rcc_detached:    '已分离',
     rcc_tailing:     '追踪日志',
     rcc_tail_hint:   'Ctrl+C 停止',
+
+    // 文件浏览器
+    fb_path_placeholder: '输入路径…',
+    fb_loading:     '加载中…',
+    fb_close:       '关闭',
+    fb_show_hidden_title: '显示隐藏文件',
+    fb_hidden_files: '隐藏文件',
+    fb_new_folder:  '新建文件夹',
+    fb_upload_title: '上传到当前目录',
+    fb_upload:      '上传',
+    fb_create:      '创建',
+    fb_empty_dir:   '目录为空',
+    fb_list_truncated: '仅显示前 {n} 项（共 {total} 项），请用路径栏直接定位',
+    fb_download_file: '下载文件',
+    fb_copy_path:   '复制路径',
+    fb_preview_hint: '点击文件预览，双击全屏查看',
+    fb_truncated:   '已截断',
+    fb_fullscreen:  '全屏查看',
+    fb_download:    '下载',
+    fb_copy_file_path: '复制文件路径',
+    fb_image_too_large: '图片过大（{size}）',
+    fb_binary_file: '二进制文件',
+    fb_cancel_upload: '取消上传',
+    fb_server_processing: '服务器处理中…',
+    fb_remaining:   '剩余 {eta}',
+    fb_drop_hint:   '拖放文件上传到 {path}',
+    fb_close_fullscreen: '关闭全屏',
+    fb_load_failed: '加载失败',
+    fb_copy_failed: '复制失败',
+    fb_folder_created: '已新建文件夹: {name}',
+    fb_create_failed: '新建失败: {msg}',
+    fb_upload_busy: '正在上传，请等待当前上传完成',
+    fb_upload_cancelled: '已取消上传',
+    fb_upload_cancelled_partial: '已取消上传（已完成 {n} 个）',
+    fb_upload_done: '已上传 {n} 个文件',
+    fb_upload_partial: '已上传 {n} 个，失败 {m} 个: {names}',
+    fb_upload_failed: '上传失败: {msg}',
+    fb_download_failed: '下载失败',
+    fb_download_failed_msg: '下载失败: {msg}',
+    fb_downloading: '下载: {name}',
+
+    // 目录选择器
+    dp_show_hidden_title: '显示隐藏目录',
+    dp_hidden:      '隐藏',
+    dp_new_dir:     '新建目录',
+    dp_select_current: '选择当前',
+    dp_close:       '关闭',
+    dp_loading:     '加载中…',
+    dp_open:        '打开',
+    dp_select:      '选择',
+    dp_no_dirs:     '无目录',
+    dp_load_failed: '加载失败',
+    dp_create_failed: '创建失败',
+
+    // 符号栏
+    sb_newline:     '换行',
+    sb_newline_title: '换行 (LF)',
+    sb_send:        '发送',
+    sb_send_title:  '发送 (CR)',
+
+    // 终端
+    term_jump_bottom: '回到底部',
+    term_new_output: '新输出',
+    term_cancel_upload: '取消上传',
+    term_server_processing: '服务器处理中…',
+    term_remaining: '剩余 {eta}',
+    term_uploading: '上传中...',
+    term_upload_title: '上传图片或文件',
+    term_upload_cancelled: '已取消上传',
+    term_upload_failed: '上传失败: {name} ({msg})',
+    term_copied:    '已复制 {n} 个字符',
+    term_copy_pending: 'Agent 请求复制 {n} 个字符，点击复制',
+    term_clipboard_denied: '浏览器拒绝写入剪贴板',
+
+    // 终止确认框
+    kc_msg_prefix:  '终止 ',
+    kc_msg_suffix:  '？会话将结束并退出终端。',
+
+    // 新建对话
+    nc_loading:     '加载中…',
+    nc_pick_dir:    '选择目录',
+
+    // 终端右键菜单 / 移动端复制
+    term_copy_selection: '复制选中文本',
+    term_close:     '关闭',
+    ctx_copy:       '复制',
+    ctx_paste:      '粘贴',
+    ctx_text_select: '文本选择',
+    ctx_select_all: '全选',
+    ctx_clear:      '清屏',
+
+    // 会话列表 / 切换器
+    cl_running:     '运行中',
+    cl_ended:       '已结束',
+    switcher_sessions: '会话',
+
+    // 日志查看
+    lv_refresh:     '刷新',
+    lv_close:       '关闭',
+    lv_loading:     '加载中…',
+    lv_empty:       '（空）',
+
+    // 上传 / 时长
+    up_too_large:   '文件超过 10 GB 上传上限',
+    up_disk_full:   '服务器磁盘空间不足',
+    dur_sec:        '{n}秒',
+    dur_min:        '{m}分{s}秒',
+    dur_hour:       '{h}小时{m}分',
   },
 
   en: {
@@ -173,6 +283,7 @@ const messages = {
     login_btn:      'LOGIN',
     login_loading:  'LOGGING IN...',
     login_error:    'Invalid credentials',
+    login_throttled: 'Too many failed attempts, try again in 10 minutes',
 
     new_conv:       'New conversation',
     no_sessions:    'No active sessions',
@@ -227,6 +338,7 @@ const messages = {
     shell_status_connected: 'Connected',
     shell_status_reconnecting: 'Reconnecting',
     shell_status_closed: 'Disconnected',
+    shell_exited_hint: '[Shell exited, press Enter to restart]',
     shell_status_error: 'Connection error',
     shell_status_reconnected: 'Terminal reconnected',
 
@@ -315,6 +427,114 @@ const messages = {
     rcc_detached:    'Detached',
     rcc_tailing:     'Tailing log',
     rcc_tail_hint:   'Ctrl+C to stop',
+
+    // 文件浏览器
+    fb_path_placeholder: 'Enter a path…',
+    fb_loading:     'Loading…',
+    fb_close:       'Close',
+    fb_show_hidden_title: 'Show hidden files',
+    fb_hidden_files: 'Hidden',
+    fb_new_folder:  'New folder',
+    fb_upload_title: 'Upload to current folder',
+    fb_upload:      'Upload',
+    fb_create:      'Create',
+    fb_empty_dir:   'Folder is empty',
+    fb_list_truncated: 'Showing the first {n} of {total} items; type a path to jump directly',
+    fb_download_file: 'Download file',
+    fb_copy_path:   'Copy path',
+    fb_preview_hint: 'Click a file to preview, double-click for full screen',
+    fb_truncated:   'Truncated',
+    fb_fullscreen:  'Full screen',
+    fb_download:    'Download',
+    fb_copy_file_path: 'Copy file path',
+    fb_image_too_large: 'Image too large ({size})',
+    fb_binary_file: 'Binary file',
+    fb_cancel_upload: 'Cancel upload',
+    fb_server_processing: 'Processing on server…',
+    fb_remaining:   '{eta} left',
+    fb_drop_hint:   'Drop files to upload to {path}',
+    fb_close_fullscreen: 'Exit full screen',
+    fb_load_failed: 'Failed to load',
+    fb_copy_failed: 'Copy failed',
+    fb_folder_created: 'Folder created: {name}',
+    fb_create_failed: 'Create failed: {msg}',
+    fb_upload_busy: 'Upload in progress, please wait',
+    fb_upload_cancelled: 'Upload cancelled',
+    fb_upload_cancelled_partial: 'Upload cancelled ({n} completed)',
+    fb_upload_done: 'Uploaded {n} file(s)',
+    fb_upload_partial: 'Uploaded {n}, {m} failed: {names}',
+    fb_upload_failed: 'Upload failed: {msg}',
+    fb_download_failed: 'Download failed',
+    fb_download_failed_msg: 'Download failed: {msg}',
+    fb_downloading: 'Downloading: {name}',
+
+    // 目录选择器
+    dp_show_hidden_title: 'Show hidden folders',
+    dp_hidden:      'Hidden',
+    dp_new_dir:     'New folder',
+    dp_select_current: 'Select current',
+    dp_close:       'Close',
+    dp_loading:     'Loading…',
+    dp_open:        'Open',
+    dp_select:      'Select',
+    dp_no_dirs:     'No folders',
+    dp_load_failed: 'Failed to load',
+    dp_create_failed: 'Create failed',
+
+    // 符号栏
+    sb_newline:     'Newline',
+    sb_newline_title: 'Newline (LF)',
+    sb_send:        'Send',
+    sb_send_title:  'Send (CR)',
+
+    // 终端
+    term_jump_bottom: 'Jump to bottom',
+    term_new_output: 'New output',
+    term_cancel_upload: 'Cancel upload',
+    term_server_processing: 'Processing on server…',
+    term_remaining: '{eta} left',
+    term_uploading: 'Uploading...',
+    term_upload_title: 'Upload image or file',
+    term_upload_cancelled: 'Upload cancelled',
+    term_upload_failed: 'Upload failed: {name} ({msg})',
+    term_copied:    'Copied {n} characters',
+    term_copy_pending: 'Agent requested copying {n} characters, click to copy',
+    term_clipboard_denied: 'Browser denied clipboard access',
+
+    // 终止确认框
+    kc_msg_prefix:  'Stop ',
+    kc_msg_suffix:  '? The session will end and its terminal will exit.',
+
+    // 新建对话
+    nc_loading:     'Loading…',
+    nc_pick_dir:    'Choose directory',
+
+    // 终端右键菜单 / 移动端复制
+    term_copy_selection: 'Copy selected text',
+    term_close:     'Close',
+    ctx_copy:       'Copy',
+    ctx_paste:      'Paste',
+    ctx_text_select: 'Text Select',
+    ctx_select_all: 'Select All',
+    ctx_clear:      'Clear',
+
+    // 会话列表 / 切换器
+    cl_running:     'Running',
+    cl_ended:       'Ended',
+    switcher_sessions: 'SESSIONS',
+
+    // 日志查看
+    lv_refresh:     'Refresh',
+    lv_close:       'Close',
+    lv_loading:     'Loading…',
+    lv_empty:       '(empty)',
+
+    // 上传 / 时长
+    up_too_large:   'File exceeds the 10 GB upload limit',
+    up_disk_full:   'Server is out of disk space',
+    dur_sec:        '{n}s',
+    dur_min:        '{m}m {s}s',
+    dur_hour:       '{h}h {m}m',
   },
 };
 

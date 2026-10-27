@@ -23,8 +23,9 @@ const { v4: uuidv4 } = require('uuid');
 const {
   wsAuth,
   validateTokenExported,
-  createTokenExported,
-  validateCredentials,
+  attemptLogin,
+  onTokensInvalidated,
+  wsToken,
   changePassword,
   LOCAL_TOKEN_FILE,
   writeLocalToken,
@@ -39,7 +40,9 @@ const {
 const { handleFsUploadRequest, handleAttachmentUploadRequest, handleFsDownloadRequest } = require('./fs-handler');
 
 const PORT = Math.max(1, Math.min(65535, parseInt(process.env.PORT) || 8310));
-const APP_SOCK   = '/tmp/rcc-app.sock';
+// 固定的 /tmp/rcc-app.sock 是全机共享路径：同机第二个用户/实例启动时会 unlink 掉别人的 socket 再接管。
+// 改为按 HOME 区分（可用 RCC_APP_SOCK 覆盖），并通过环境变量传给 app.js，二者始终一致
+const APP_SOCK   = process.env.RCC_APP_SOCK || path.join(os.homedir(), '.rcc', 'app.sock');
 const APP_SCRIPT = path.join(__dirname, 'app.js');
 const UPLOAD_DIR = path.join(os.homedir(), '.rcc', 'uploads');
 
@@ -48,14 +51,26 @@ const RCC_DIR   = path.join(os.homedir(), '.rcc');
 const LOCK_FILE = path.join(RCC_DIR, 'server.lock');
 fs.mkdirSync(RCC_DIR, { recursive: true });
 
+// PID 可能已被系统复用给无关进程（重启机器/容器后很常见）：仅凭 kill(pid,0) 会误判“已在运行”，
+// 导致 watchdog 反复拉起又立即退出。Linux 上再核对 cmdline 是否真是 RemoteCC 服务进程。
+function isRccServerPid(pid) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try { process.kill(pid, 0); } catch (e) { if (e.code !== 'EPERM') return false; }
+  if (process.platform !== 'linux') return true;
+  try {
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    return /(?:^|[\/\0])(?:proxy|index)\.js(?:\0|$)/.test(cmdline);
+  } catch (_) {
+    return true;   // 读不到 /proc 时保守按存活处理
+  }
+}
+
 try {
   const existing = fs.existsSync(LOCK_FILE)
     ? JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'))
     : null;
   if (existing) {
-    let alive = false;
-    try { process.kill(existing.pid, 0); alive = true; } catch (_) {}
-    if (alive) {
+    if (isRccServerPid(existing.pid)) {
       console.error(
         `\n  ✗ RemoteCC 已在运行 (pid ${existing.pid}, port ${existing.port})\n` +
         `    如需重启，先运行: kill ${existing.pid}\n`
@@ -81,13 +96,28 @@ function spawnApp() {
   try { fs.unlinkSync(APP_SOCK); } catch (_) {}
 
   const child = fork(APP_SCRIPT, [], {
-    env: { ...process.env },
+    env: { ...process.env, RCC_APP_SOCK: APP_SOCK },
     silent: false,
   });
-  child.on('exit', code => console.log(`[proxy] app.js exited (code ${code})`));
+  const startedAt = Date.now();
+  child.on('exit', (code, signal) => {
+    console.log(`[proxy] app.js exited (code ${code}${signal ? `, signal ${signal}` : ''})`);
+    // hotReload 会先把 appProcess 置空；仍指向它说明是意外退出，自动拉起，否则 SPA/API 会一直 503
+    if (child !== appProcess || reloadTimer) return;
+    appCrashCount = Date.now() - startedAt > 30000 ? 1 : appCrashCount + 1;
+    const delay = Math.min(30000, 500 * 2 ** (appCrashCount - 1));
+    console.log(`[proxy] respawning app.js in ${delay}ms`);
+    appProcess = null;
+    reloadTimer = setTimeout(() => {
+      reloadTimer = null;
+      if (!appProcess) appProcess = spawnApp();
+    }, delay);
+  });
   child.on('error', err => console.error('[proxy] app.js error:', err.message));
   return child;
 }
+
+let appCrashCount = 0;
 
 let reloadTimer = null;
 
@@ -127,7 +157,7 @@ function replyResult(res, fn) {
 }
 
 function withJsonBody(req, res, fn) {
-  readJsonBody(req, body => replyResult(res, () => fn(body)));
+  readJsonBody(req, res, body => replyResult(res, () => fn(body)));
 }
 
 function terminalHttpRoute(req, res, urlPath, query) {
@@ -255,7 +285,9 @@ function handleProxyDirect(req, res) {
   const url = req.url.split('?')[0];
   const parsedUrl = new URL(req.url, 'http://localhost');
 
-  if (transferRoute(req, res, url, parsedUrl)) return true;
+  // Express 默认非严格路由：/api/fs/upload/ 在 app.js 里同样命中上传路由，但会被整体缓冲进 IPC；
+  // 这里把结尾斜杠也归到流式处理
+  if (transferRoute(req, res, url.length > 1 ? url.replace(/\/+$/, '') : url, parsedUrl)) return true;
   if (terminalHttpRoute(req, res, url, parsedUrl)) return true;
   if (shellHttpRoute(req, res, url, parsedUrl)) return true;
 
@@ -289,10 +321,27 @@ function handleProxyDirect(req, res) {
 
 // ── Unix socket 转发 ──────────────────────────────────────────────────────────
 
+// 转发给 app.js 的请求整体 base64 进 IPC 帧（10s 超时），只承载小 JSON；大文件走 transferRoute 的流式处理
+const APP_MAX_BODY = 8 * 1024 * 1024;
+
 function proxyToApp(req, res) {
   const chunks = [];
-  req.on('data', c => chunks.push(c));
+  let size = 0;
+  let tooLarge = false;
+  req.on('data', c => {
+    if (tooLarge) return;
+    size += c.length;
+    if (size > APP_MAX_BODY) {
+      tooLarge = true;
+      chunks.length = 0;
+      res.setHeader('connection', 'close');
+      jsonReply(res, 413, { error: 'Payload too large' });
+      return;
+    }
+    chunks.push(c);
+  });
   req.on('end', () => {
+    if (tooLarge) return;
     const bodyBuf = Buffer.concat(chunks);
     const reqId   = uuidv4();
 
@@ -362,6 +411,14 @@ function proxyToApp(req, res) {
         }
       });
 
+      // app.js 热重启时可能不回复就关闭连接；此时 error 不一定触发、timeout 也随 destroy 失效，
+      // 不兜底的话浏览器请求会永远挂起（server.requestTimeout = 0）
+      sock.on('close', hadError => {
+        if (handled || hadError) return;
+        handled = true;
+        res.writeHead(502); res.end('Bad gateway');
+      });
+
       sock.on('error', () => {
         if (handled) return;
         retries++;
@@ -393,43 +450,68 @@ function jsonReply(res, status, obj) {
   res.end(body);
 }
 
-function readJsonBody(req, cb) {
+// 超限回 413（而不是直接断连让客户端只看到网络错误）；非对象 JSON（null/数组/数字）一律当作 {}，避免解构时抛错
+function readJsonBody(req, res, cb) {
   const chunks = [];
   let size = 0;
+  let done = false;
   req.on('data', c => {
+    if (done) return;
     size += c.length;
     if (size > 64 * 1024) {
-      req.destroy();
+      done = true;
+      res.setHeader('connection', 'close');
+      jsonReply(res, 413, { error: 'Payload too large' });
+      req.resume();
       return;
     }
     chunks.push(c);
   });
   req.on('end', () => {
+    if (done) return;
+    done = true;
     let body = {};
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (_) {}
+    if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
     cb(body);
   });
-  req.on('error', () => cb({}));
+  req.on('error', () => {
+    if (done) return;
+    done = true;
+    cb({});
+  });
 }
 
+// 免鉴权转发给 app.js 的只有静态资源/SPA/docs，用不到请求体；限制大小，避免未登录请求把 proxy 内存撑爆
+const PUBLIC_MAX_BODY = 64 * 1024;
+
 const server = http.createServer((req, res) => {
+  // 只接受 origin-form（以 / 开头）的请求目标；absolute-form（http://host/api/...）会被 Express 解析成 /api 路由，绕过下面的鉴权
+  if (!req.url.startsWith('/') || req.url.startsWith('//')) {
+    jsonReply(res, 400, { error: 'Bad request' });
+    return;
+  }
   const urlPath = req.url.split('?')[0];
+  // Express 路由默认大小写不敏感，/API/... 同样会命中 /api 路由，鉴权判断也要不区分大小写
+  const isApi = /^\/api(\/|$)/i.test(urlPath);
 
   // ── POST /api/login：在 proxy 侧处理，token 登记到 proxy 的 auth 实例 ──────
   if (req.method === 'POST' && urlPath === '/api/login') {
-    readJsonBody(req, body => {
+    readJsonBody(req, res, body => {
       const { username, password } = body;
-      if (validateCredentials(username, password)) {
-        jsonReply(res, 200, { token: createTokenExported() });
-      } else {
-        jsonReply(res, 401, { error: 'Invalid credentials' });
-      }
+      const result = attemptLogin(req.socket.remoteAddress || '', username, password);
+      jsonReply(res, result.status, result.body);
     });
     return;
   }
 
   // ── 静态资源 / SPA / docs：无需 auth，直接转发 ──────────────────────────────
-  if (!urlPath.startsWith('/api/')) {
+  if (!isApi) {
+    if (Number(req.headers['content-length'] || 0) > PUBLIC_MAX_BODY || req.headers['transfer-encoding']) {
+      jsonReply(res, 413, { error: 'Payload too large' });
+      req.resume();
+      return;
+    }
     return proxyToApp(req, res);
   }
 
@@ -445,7 +527,7 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'POST' && urlPath === '/api/change-password') {
-    readJsonBody(req, body => {
+    readJsonBody(req, res, body => {
       try {
         changePassword(body.currentPassword, body.newPassword);
         jsonReply(res, 200, { ok: true });
@@ -468,6 +550,12 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (req, socket, head) => {
+  // 与 HTTP 入口一致：只接受 origin-form；畸形目标（如 //[ ）直接丢弃
+  if (!req.url.startsWith('/') || req.url.startsWith('//')) {
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   if (!wsAuth(req)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
     socket.destroy();
@@ -476,17 +564,40 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   const wsId = uuidv4();
+  ws._rccToken = wsToken(req);
+  ws._rccAlive = true;
+  ws.on('pong', () => { ws._rccAlive = true; });
   registerWS(wsId, ws);
   ws.send(JSON.stringify({ type: 'session_list', sessions: listSessions() }));
-  ws.on('message', data => handleMessage(ws, wsId, data.toString()));
+  ws.on('message', data => {
+    try { handleMessage(ws, wsId, data.toString()); }
+    catch (e) { console.error(`WS [${wsId}] message error:`, e.message); }
+  });
   ws.on('close',   ()   => { closeWS(wsId); unregisterWS(wsId); });
   ws.on('error',   err  => {
     console.error(`WS [${wsId}]:`, err.message);
     closeWS(wsId); unregisterWS(wsId);
   });
 });
+
+// 改密码后旧 token 作废，已建立的 WS 也要断开，否则旧设备仍能继续操作终端
+onTokensInvalidated(() => {
+  for (const ws of wss.clients) {
+    if (!validateTokenExported(ws._rccToken)) ws.close(4001, 'Unauthorized');
+  }
+});
+
+// 心跳：半开连接（手机断网、NAT 超时）收不到 close，靠 ping/pong 及时回收
+const WS_HEARTBEAT_MS = 30000;
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (!ws._rccAlive) { ws.terminate(); continue; }
+    ws._rccAlive = false;
+    try { ws.ping(); } catch (_) {}
+  }
+}, WS_HEARTBEAT_MS).unref();
 
 // ── 启动 ──────────────────────────────────────────────────────────────────────
 

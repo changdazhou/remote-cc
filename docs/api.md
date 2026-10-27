@@ -21,7 +21,7 @@ curl -X POST http://localhost:8310/api/login \
 curl -H "Authorization: Bearer <token>" http://localhost:8310/api/active-sessions
 ```
 
-Token 有效期 30 天，存储在客户端 `localStorage`。
+Token 有效期 30 天，存储在客户端 `localStorage`。同一 IP 10 分钟内登录失败 10 次后，`/api/login` 返回 `429`，窗口过后自动解除。
 
 修改 Web 登录密码：
 
@@ -32,7 +32,7 @@ curl -X POST http://localhost:8310/api/change-password \
   -d '{"currentPassword":"oldpassword","newPassword":"newpassword123"}'
 ```
 
-密码会以 scrypt 哈希保存到 `~/.rcc/auth.json`。修改成功后现有 Web Token 失效，需要重新登录；本地 `~/.rcc/local.token` 不受影响。
+密码会以 scrypt 哈希保存到 `~/.rcc/auth.json`。修改成功后现有 Web Token 失效，已建立的 WebSocket 会以关闭码 `4001` 断开，需要重新登录；本地 `~/.rcc/local.token` 不受影响。
 
 ---
 
@@ -268,7 +268,7 @@ curl -X POST http://localhost:8310/api/login \
 curl -H "Authorization: Bearer <token>" http://localhost:8310/api/active-sessions
 ```
 
-Tokens are valid for 30 days and stored in the client's `localStorage`.
+Tokens are valid for 30 days and stored in the client's `localStorage`. After 10 failed logins from the same IP within 10 minutes, `/api/login` returns `429` until the window expires.
 
 Change the Web login password:
 
@@ -279,7 +279,7 @@ curl -X POST http://localhost:8310/api/change-password \
   -d '{"currentPassword":"oldpassword","newPassword":"newpassword123"}'
 ```
 
-The password is stored as a scrypt hash in `~/.rcc/auth.json`. After a successful change, existing Web tokens are invalidated and the browser must sign in again; the local `~/.rcc/local.token` is unaffected.
+The password is stored as a scrypt hash in `~/.rcc/auth.json`. After a successful change, existing Web tokens are invalidated, open WebSockets are closed with code `4001`, and the browser must sign in again; the local `~/.rcc/local.token` is unaffected.
 
 ---
 
